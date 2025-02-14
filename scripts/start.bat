@@ -26,17 +26,29 @@ if not exist venv\Scripts\activate.bat (
     uv.exe --cache-dir %UV_CACHE_DIR% venv --python bin\python\cpython-3.11.11-windows-x86_64-none\python.exe ./venv
 )
 
+if not exist bin\nuget.exe (
+    curl --tlsv1.2 -kL https://dist.nuget.org/win-x86-commandline/latest/nuget.exe -o bin\nuget.exe
+)
+
+@REM Install Agility SDK for D3D12
+if not exist bin\Microsoft.Direct3D.D3D12.1.615.0 (
+@REM https://www.nuget.org/packages/Microsoft.Direct3D.D3D12/1.615.0
+    cd bin
+    nuget.exe install Microsoft.Direct3D.D3D12 -Version 1.615.0
+    cd ..
+)
+
+@REM Fetch DirectX HLSL compiler
+if not exist bin\dxc_2024_07_31 (
+    curl --tlsv1.2 -kL https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2407/dxc_2024_07_31.zip -o bin\dxc_2024_07_31.zip
+    powershell -command "Expand-Archive -Path bin\dxc_2024_07_31.zip -DestinationPath bin\dxc_2024_07_31"
+)
+
 @REM ---------------------------------------
 uv pip install setuptools wheel scikit-build scikit-build-core pybind11
 uv pip install cmake
 @REM ---------------------------------------
 
 call venv\Scripts\activate.bat
-
-uv pip uninstall pyd3d12
-set SKBUILD_SKIP_BUILD=1
-set SKBUILD_SKIP_CMAKE=1
-uv pip install -v -e .
-python.exe setup.py build
 
 powershell

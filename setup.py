@@ -36,6 +36,7 @@ lib_list = [
     "pybind11",
     "sciking-build",
     "sciking-build-core",
+    "numpy",
     # "Pygments",
     # "PyQt5",
     # "PyQt5-sip",

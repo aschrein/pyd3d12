@@ -29,4 +29,13 @@ print(f"native.square(4) = {native.square(4)}")
 
 assert native.square(4) == 16
 
-print(CONSOLE_COLOR_GREEN, "Test passed", CONSOLE_COLOR_END)
+factory = native.IDXGIFactory()
+adapters = factory.EnumAdapters()
+
+for adapter in adapters:
+    print(f"Adapter: {adapter.GetDesc().Description}")
+    pass
+
+device = native.CreateDevice(adapters[0], native.D3D_FEATURE_LEVEL._11_0)
+
+print(CONSOLE_COLOR_GREEN, "Device created successfully", CONSOLE_COLOR_END)

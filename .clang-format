@@ -1,0 +1,32 @@
+Language:        Cpp
+BasedOnStyle: LLVM
+BraceWrapping:   
+  AfterClass:      true # false
+  AfterControlStatement: true # false
+  AfterEnum:       true # false
+  AfterFunction:   true # false
+  AfterNamespace:  true # false
+  AfterObjCDeclaration: true # false
+  AfterStruct:     true # false
+  AfterUnion:      true # false
+  AfterExternBlock: true # false
+  BeforeCatch:     true # false
+  BeforeElse:      true # false
+  IndentBraces:    true # false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  SplitEmptyNamespace: true
+AccessModifierOffset: '-4'
+AlignConsecutiveAssignments: 'true'
+AlignOperands: 'true'
+AlignAfterOpenBracket: 'true'
+AlignConsecutiveDeclarations: 'true'
+AlignTrailingComments: 'true'
+AllowShortCaseLabelsOnASingleLine: 'true'
+AllowShortIfStatementsOnASingleLine: 'true'
+AllowShortLoopsOnASingleLine: 'true'
+BinPackArguments: 'true'
+BinPackParameters: 'true'
+ColumnLimit: '180'
+IndentWidth: 4
+IndentPPDirectives: AfterHash
