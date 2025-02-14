@@ -22,16 +22,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+#define PYBIND11_DETAILED_ERROR_MESSAGES
+
 #include <d3dx12/d3dx12.h>
 #include <dxgi1_6.h>
+#include <optional>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 namespace py = pybind11;
+using namespace pybind11::literals;
 
 float square(float x) { return x * x; }
 
-#define STRINGIFY(x) #x
+#define _STRINGIFY(x) #x
+#define STRINGIFY(x) _STRINGIFY(x)
 
 #define ASSERT_HRESULT_PANIC(hr)                                                                                                                                                   \
     if (FAILED(hr)) {                                                                                                                                                              \
@@ -180,6 +185,33 @@ public:
     }
 };
 
+class ID3D12ResourceWrapper {
+public:
+    ID3D12Resource * resource  = nullptr;
+    ID3D12Resource1 *resource1 = nullptr;
+    ID3D12Resource2 *resource2 = nullptr;
+
+public:
+    ID3D12ResourceWrapper(ID3D12Resource *resource) : resource(resource) {
+        resource->QueryInterface(IID_PPV_ARGS(&resource1));
+        resource->QueryInterface(IID_PPV_ARGS(&resource2));
+    }
+
+    ~ID3D12ResourceWrapper() {
+        if (resource) resource->Release();
+        if (resource1) resource1->Release();
+        if (resource2) resource2->Release();
+    }
+
+    uint64_t GetGPUVirtualAddress() { return (uint64_t)resource->GetGPUVirtualAddress(); }
+    uint64_t Map() {
+        void *data = nullptr;
+        resource->Map(0, nullptr, &data);
+        return (uint64_t)data;
+    }
+    void Unmap() { resource->Unmap(0, nullptr); }
+};
+
 class ID3D12DeviceWrapper {
 public:
     ID3D12Device * device  = nullptr;
@@ -214,6 +246,15 @@ public:
         if (device6) device6->Release();
         if (device7) device7->Release();
         if (device8) device8->Release();
+    }
+
+    std::shared_ptr<ID3D12ResourceWrapper> CreateCommittedResource(const D3D12_HEAP_PROPERTIES &heapProperties, D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC &resourceDesc,
+                                                                   D3D12_RESOURCE_STATES initialState, const std::optional<D3D12_CLEAR_VALUE> &optimizedClearValue) {
+        ID3D12Resource *resource = nullptr;
+        HRESULT         hr = device->CreateCommittedResource(&heapProperties, heapFlags, &resourceDesc, initialState, optimizedClearValue ? &optimizedClearValue.value() : nullptr,
+                                                     IID_PPV_ARGS(&resource));
+        ASSERT_HRESULT_PANIC(hr);
+        return std::make_shared<ID3D12ResourceWrapper>(resource);
     }
 };
 
@@ -384,10 +425,198 @@ PYBIND11_MODULE(native, m) {
         .value("_12_1", D3D_FEATURE_LEVEL_12_1)
         .export_values();
 
+    py::class_<D3D12_DEPTH_STENCIL_VALUE>(m, "D3D12_DEPTH_STENCIL_VALUE") //
+        .def(py::init())                                                  //
+        .def_readwrite("Depth", &D3D12_DEPTH_STENCIL_VALUE::Depth)        //
+        .def_readwrite("Stencil", &D3D12_DEPTH_STENCIL_VALUE::Stencil)    //
+        ;
+    py::class_<D3D12_CLEAR_VALUE>(m, "D3D12_CLEAR_VALUE")    //
+        .def(py::init())                                     //
+        .def_readwrite("Format", &D3D12_CLEAR_VALUE::Format) //
+        .def_property(
+            "Color", [](D3D12_CLEAR_VALUE &self) { return self.Color; },
+            [](D3D12_CLEAR_VALUE &self, float color[4]) {
+                self.Color[0] = color[0];
+                self.Color[1] = color[1];
+                self.Color[2] = color[2];
+                self.Color[3] = color[3];
+            }) //
+        .def_readwrite("DepthStencil", &D3D12_CLEAR_VALUE::DepthStencil);
+
+    py::enum_<D3D12_RESOURCE_STATES>(m, "D3D12_RESOURCE_STATES", py::arithmetic())
+        .value("COMMON", D3D12_RESOURCE_STATE_COMMON)
+        .value("VERTEX_AND_CONSTANT_BUFFER", D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER)
+        .value("INDEX_BUFFER", D3D12_RESOURCE_STATE_INDEX_BUFFER)
+        .value("RENDER_TARGET", D3D12_RESOURCE_STATE_RENDER_TARGET)
+        .value("UNORDERED_ACCESS", D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        .value("DEPTH_WRITE", D3D12_RESOURCE_STATE_DEPTH_WRITE)
+        .value("DEPTH_READ", D3D12_RESOURCE_STATE_DEPTH_READ)
+        .value("NON_PIXEL_SHADER_RESOURCE", D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
+        .value("PIXEL_SHADER_RESOURCE", D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+        .value("STREAM_OUT", D3D12_RESOURCE_STATE_STREAM_OUT)
+        .value("INDIRECT_ARGUMENT", D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)
+        .value("COPY_DEST", D3D12_RESOURCE_STATE_COPY_DEST)
+        .value("COPY_SOURCE", D3D12_RESOURCE_STATE_COPY_SOURCE)
+        .value("RESOLVE_DEST", D3D12_RESOURCE_STATE_RESOLVE_DEST)
+        .value("RESOLVE_SOURCE", D3D12_RESOURCE_STATE_RESOLVE_SOURCE)
+        .value("GENERIC_READ", D3D12_RESOURCE_STATE_GENERIC_READ)
+        .value("PRESENT", D3D12_RESOURCE_STATE_PRESENT)
+        .value("PREDICATION", D3D12_RESOURCE_STATE_PREDICATION)
+        .value("VIDEO_DECODE_READ", D3D12_RESOURCE_STATE_VIDEO_DECODE_READ)
+        .value("VIDEO_DECODE_WRITE", D3D12_RESOURCE_STATE_VIDEO_DECODE_WRITE)
+        .value("VIDEO_PROCESS_READ", D3D12_RESOURCE_STATE_VIDEO_PROCESS_READ)
+        .value("VIDEO_PROCESS_WRITE", D3D12_RESOURCE_STATE_VIDEO_PROCESS_WRITE)
+        .value("VIDEO_ENCODE_READ", D3D12_RESOURCE_STATE_VIDEO_ENCODE_READ)
+        .value("VIDEO_ENCODE_WRITE", D3D12_RESOURCE_STATE_VIDEO_ENCODE_WRITE)
+        .export_values();
+
+    py::enum_<D3D12_HEAP_FLAGS>(m, "D3D12_HEAP_FLAGS")
+        .value("NONE", D3D12_HEAP_FLAG_NONE)
+        .value("SHARED", D3D12_HEAP_FLAG_SHARED)
+        .value("DENY_BUFFERS", D3D12_HEAP_FLAG_DENY_BUFFERS)
+        .value("DENY_TEXTURES", D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES)
+        .value("DENY_RT_DS_TEXTURES", D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES)
+        .value("HARDWARE_PROTECTED", D3D12_HEAP_FLAG_HARDWARE_PROTECTED)
+        .value("ALLOW_WRITE_WATCH", D3D12_HEAP_FLAG_ALLOW_WRITE_WATCH)
+        .value("ALLOW_SHADER_ATOMICS", D3D12_HEAP_FLAG_ALLOW_SHADER_ATOMICS)
+        .value("CREATE_NOT_RESIDENT", D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT)
+        .value("CREATE_NOT_ZEROED", D3D12_HEAP_FLAG_CREATE_NOT_ZEROED)
+        .value("TOOLS_USE_MANUAL_WRITE_TRACKING", D3D12_HEAP_FLAG_TOOLS_USE_MANUAL_WRITE_TRACKING)
+        .value("ALLOW_ALL_BUFFERS_AND_TEXTURES", D3D12_HEAP_FLAG_ALLOW_ALL_BUFFERS_AND_TEXTURES)
+        .value("ALLOW_ONLY_BUFFERS", D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS)
+        .value("ALLOW_ONLY_NON_RT_DS_TEXTURES", D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES)
+        .value("ALLOW_ONLY_RT_DS_TEXTURES", D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES)
+        .export_values();
+
+    py::enum_<D3D12_MEMORY_POOL>(m, "D3D12_MEMORY_POOL")
+        .value("UNKNOWN", D3D12_MEMORY_POOL_UNKNOWN)
+        .value("L0", D3D12_MEMORY_POOL_L0)
+        .value("L1", D3D12_MEMORY_POOL_L1)
+        .export_values();
+
+    py::enum_<D3D12_CPU_PAGE_PROPERTY>(m, "D3D12_CPU_PAGE_PROPERTY")
+        .value("UNKNOWN", D3D12_CPU_PAGE_PROPERTY_UNKNOWN)
+        .value("NOT_AVAILABLE", D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE)
+        .value("WRITE_COMBINE", D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE)
+        .value("WRITE_BACK", D3D12_CPU_PAGE_PROPERTY_WRITE_BACK)
+        .export_values();
+
+    py::enum_<D3D12_HEAP_TYPE>(m, "D3D12_HEAP_TYPE")
+        .value("DEFAULT", D3D12_HEAP_TYPE_DEFAULT)
+        .value("UPLOAD", D3D12_HEAP_TYPE_UPLOAD)
+        .value("READBACK", D3D12_HEAP_TYPE_READBACK)
+        .value("CUSTOM", D3D12_HEAP_TYPE_CUSTOM)
+        .export_values();
+
+    py::class_<D3D12_HEAP_PROPERTIES>(m, "D3D12_HEAP_PROPERTIES") //
+        .def(py::init())                                          //
+        .def(py::init([](D3D12_HEAP_TYPE Type, D3D12_CPU_PAGE_PROPERTY CPUPageProperty, D3D12_MEMORY_POOL MemoryPoolPreference, UINT CreationNodeMask, UINT VisibleNodeMask) {
+                 D3D12_HEAP_PROPERTIES properties = {};
+                 properties.Type                  = Type;
+                 properties.CPUPageProperty       = CPUPageProperty;
+                 properties.MemoryPoolPreference  = MemoryPoolPreference;
+                 properties.CreationNodeMask      = CreationNodeMask;
+                 properties.VisibleNodeMask       = VisibleNodeMask;
+                 return properties;
+             }),
+             "Type"_a            = D3D12_HEAP_TYPE_DEFAULT,                                                                                                                  //
+             "CPUPageProperty"_a = D3D12_CPU_PAGE_PROPERTY_UNKNOWN, "MemoryPoolPreference"_a = D3D12_MEMORY_POOL_UNKNOWN, "CreationNodeMask"_a = 1, "VisibleNodeMask"_a = 1) //
+
+        .def_readwrite("Type", &D3D12_HEAP_PROPERTIES::Type)                                 //
+        .def_readwrite("CPUPageProperty", &D3D12_HEAP_PROPERTIES::CPUPageProperty)           //
+        .def_readwrite("MemoryPoolPreference", &D3D12_HEAP_PROPERTIES::MemoryPoolPreference) //
+        .def_readwrite("CreationNodeMask", &D3D12_HEAP_PROPERTIES::CreationNodeMask)         //
+        .def_readwrite("VisibleNodeMask", &D3D12_HEAP_PROPERTIES::VisibleNodeMask)           //
+        ;
+
+    py::enum_<D3D12_RESOURCE_DIMENSION>(m, "D3D12_RESOURCE_DIMENSION")
+        .value("UNKNOWN", D3D12_RESOURCE_DIMENSION_UNKNOWN)
+        .value("BUFFER", D3D12_RESOURCE_DIMENSION_BUFFER)
+        .value("TEXTURE1D", D3D12_RESOURCE_DIMENSION_TEXTURE1D)
+        .value("TEXTURE2D", D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+        .value("TEXTURE3D", D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+        .export_values();
+
+    py::class_<DXGI_SAMPLE_DESC>(m, "DXGI_SAMPLE_DESC") //
+        .def(py::init())                                //
+        .def(py::init([](UINT Count, UINT Quality) {
+                 DXGI_SAMPLE_DESC desc = {};
+                 desc.Count            = Count;
+                 desc.Quality          = Quality;
+                 return desc;
+             }),
+             "Count"_a = 1, "Quality"_a = 0)                  //
+        .def_readwrite("Count", &DXGI_SAMPLE_DESC::Count)     //
+        .def_readwrite("Quality", &DXGI_SAMPLE_DESC::Quality) //
+        ;
+
+    py::enum_<D3D12_RESOURCE_FLAGS>(m, "D3D12_RESOURCE_FLAGS", py::arithmetic())
+        .value("NONE", D3D12_RESOURCE_FLAG_NONE)
+        .value("ALLOW_RENDER_TARGET", D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+        .value("ALLOW_DEPTH_STENCIL", D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+        .value("ALLOW_UNORDERED_ACCESS", D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
+        .value("DENY_SHADER_RESOURCE", D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)
+        .value("ALLOW_CROSS_ADAPTER", D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER)
+        .value("ALLOW_SIMULTANEOUS_ACCESS", D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS)
+        .value("VIDEO_DECODE_REFERENCE_ONLY", D3D12_RESOURCE_FLAG_VIDEO_DECODE_REFERENCE_ONLY)
+        .value("VIDEO_ENCODE_REFERENCE_ONLY", D3D12_RESOURCE_FLAG_VIDEO_ENCODE_REFERENCE_ONLY)
+        .export_values();
+
+    py::enum_<D3D12_TEXTURE_LAYOUT>(m, "D3D12_TEXTURE_LAYOUT")
+        .value("UNKNOWN", D3D12_TEXTURE_LAYOUT_UNKNOWN)
+        .value("ROW_MAJOR", D3D12_TEXTURE_LAYOUT_ROW_MAJOR)
+        .value("_64KB_UNDEFINED_SWIZZLE", D3D12_TEXTURE_LAYOUT_64KB_UNDEFINED_SWIZZLE)
+        .value("_64KB_STANDARD_SWIZZLE", D3D12_TEXTURE_LAYOUT_64KB_STANDARD_SWIZZLE)
+        .export_values();
+
+    py::class_<D3D12_RESOURCE_DESC>(m, "D3D12_RESOURCE_DESC") //
+        .def(py::init())                                      //
+        .def(py::init([](D3D12_RESOURCE_DIMENSION Dimension, UINT64 Alignment, UINT64 Width, UINT Height, UINT16 DepthOrArraySize, UINT16 MipLevels, DXGI_FORMAT Format,
+                         DXGI_SAMPLE_DESC SampleDesc, D3D12_TEXTURE_LAYOUT Layout, D3D12_RESOURCE_FLAGS Flags) {
+                 D3D12_RESOURCE_DESC desc = {};
+                 desc.Dimension           = Dimension;
+                 desc.Alignment           = Alignment;
+                 desc.Width               = Width;
+                 desc.Height              = Height;
+                 desc.DepthOrArraySize    = DepthOrArraySize;
+                 desc.MipLevels           = MipLevels;
+                 desc.Format              = Format;
+                 desc.SampleDesc          = SampleDesc;
+                 desc.Layout              = Layout;
+                 desc.Flags               = Flags;
+                 return desc;
+             }),
+             "Dimension"_a = D3D12_RESOURCE_DIMENSION_BUFFER, "Alignment"_a = 0, "Width"_a = 0, "Height"_a = 1, "DepthOrArraySize"_a = 1, "MipLevels"_a = 1,
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "SampleDesc"_a = DXGI_SAMPLE_DESC{1, 0}, "Layout"_a = D3D12_TEXTURE_LAYOUT_ROW_MAJOR, "Flags"_a = D3D12_RESOURCE_FLAG_NONE) //
+        .def_readwrite("Dimension", &D3D12_RESOURCE_DESC::Dimension)                                                                                                       //
+        .def_readwrite("Alignment", &D3D12_RESOURCE_DESC::Alignment)                                                                                                       //
+        .def_readwrite("Width", &D3D12_RESOURCE_DESC::Width)                                                                                                               //
+        .def_readwrite("Height", &D3D12_RESOURCE_DESC::Height)                                                                                                             //
+        .def_readwrite("DepthOrArraySize", &D3D12_RESOURCE_DESC::DepthOrArraySize)                                                                                         //
+        .def_readwrite("MipLevels", &D3D12_RESOURCE_DESC::MipLevels)                                                                                                       //
+        .def_readwrite("Format", &D3D12_RESOURCE_DESC::Format)                                                                                                             //
+        .def_readwrite("SampleDesc", &D3D12_RESOURCE_DESC::SampleDesc)                                                                                                     //
+        .def_readwrite("Layout", &D3D12_RESOURCE_DESC::Layout)                                                                                                             //
+        .def_readwrite("Flags", &D3D12_RESOURCE_DESC::Flags)                                                                                                               //
+        ;
+
+    py::class_<ID3D12ResourceWrapper, std::shared_ptr<ID3D12ResourceWrapper>>(m, "ID3D12Resource") //
+        .def(py::init<ID3D12Resource *>())                                                         //
+        .def("GetGPUVirtualAddress", &ID3D12ResourceWrapper::GetGPUVirtualAddress)                 //
+        .def("Map", &ID3D12ResourceWrapper::Map)                                                   //
+        .def("Unmap", &ID3D12ResourceWrapper::Unmap)                                               //
+        ;
+
     py::class_<ID3D12DeviceWrapper, std::shared_ptr<ID3D12DeviceWrapper>>(m, "ID3D12Device") //
-        .def(py::init<ID3D12Device *>())                                                  //
+        .def(py::init<ID3D12Device *>())                                                     //
+        .def("CreateCommittedResource", &ID3D12DeviceWrapper::CreateCommittedResource,       //
+             "heapProperties"_a,                                                             //
+             "heapFlags"_a,                                                                  //
+             "resourceDesc"_a,                                                               //
+             "initialState"_a,                                                               //
+             "optimizedClearValue"_a = std::optional<D3D12_CLEAR_VALUE>{}                    //
+             )                                                                               //
         ;
 
     m.def("CreateDevice", &CreateDevice);
-
 }

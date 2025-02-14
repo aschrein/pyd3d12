@@ -22,6 +22,7 @@
 
 import os, sys
 from py.utils import *
+import ctypes
 
 native = find_native_module("native")
 
@@ -38,4 +39,45 @@ for adapter in adapters:
 
 device = native.CreateDevice(adapters[0], native.D3D_FEATURE_LEVEL._11_0)
 
-print(CONSOLE_COLOR_GREEN, "Device created successfully", CONSOLE_COLOR_END)
+buffer = device.CreateCommittedResource(
+    heapProperties = native.D3D12_HEAP_PROPERTIES(
+        Type = native.D3D12_HEAP_TYPE.CUSTOM,
+        CPUPageProperty = native.D3D12_CPU_PAGE_PROPERTY.WRITE_COMBINE,
+        MemoryPoolPreference = native.D3D12_MEMORY_POOL.L0,
+        CreationNodeMask = 1,
+        VisibleNodeMask = 1
+    ),
+    heapFlags = native.D3D12_HEAP_FLAGS.NONE,
+    resourceDesc = native.D3D12_RESOURCE_DESC(
+        Dimension = native.D3D12_RESOURCE_DIMENSION.BUFFER,
+        Alignment = 0,
+        Width = 1024,
+        Height = 1,
+        DepthOrArraySize = 1,
+        MipLevels = 1,
+        Format = native.DXGI_FORMAT.UNKNOWN,
+        SampleDesc = native.DXGI_SAMPLE_DESC(
+            Count = 1,
+            Quality = 0
+        ),
+        Layout = native.D3D12_TEXTURE_LAYOUT.ROW_MAJOR,
+        Flags = native.D3D12_RESOURCE_FLAGS.NONE
+    ),
+    initialState = native.D3D12_RESOURCE_STATES.COMMON,
+    optimizedClearValue = None
+)
+print(f"Buffer virtual address: {hex(buffer.GetGPUVirtualAddress())}")
+
+mapped_ptr = buffer.Map()
+array = (ctypes.c_float * 1024).from_address(mapped_ptr)
+for i in range(1024):
+    array[i] = i
+
+buffer.Unmap()
+
+mapped_ptr = buffer.Map()
+array = (ctypes.c_float * 1024).from_address(mapped_ptr)
+for i in range(1024):
+    assert array[i] == i
+
+print(CONSOLE_COLOR_GREEN, "SUCCESS", CONSOLE_COLOR_END)
