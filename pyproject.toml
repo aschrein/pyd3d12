@@ -1,0 +1,23 @@
+# https://scikit-build.readthedocs.io/en/latest/usage.html
+# https://github.com/pybind/scikit_build_example/blob/master/pyproject.toml
+
+[project]
+name = "PyD3D12"
+version = "0.0.0"
+authors = [
+    {name = "Anton Schreiner", email = "antonschrein@gmail.com"},
+]
+
+[build-system]
+requires = ["setuptools",
+            "wheel",
+            "pybind11",
+            "cmake>=3.12",
+            "scikit-build",
+            "scikit-build-core",
+            ]
+# build-backend = "scikit_build_core.build"
+build-backend = "scikit_build_core.setuptools.build_meta"
+
+[tool.skikit-build]
+cmake.build-type = "Release"

@@ -1,0 +1,14 @@
+name: Build & Test Python Module on Windows
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Run Build Script
+        run: scripts/build.bat
