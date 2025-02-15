@@ -26,8 +26,26 @@ import os, sys
 from py.utils import *
 from py.dxc import *
 import ctypes
+import argparse
+
+args = argparse.ArgumentParser()
+args.add_argument("--build", type=str, default="Release")
+args.add_argument("--wait_for_debugger_present", action="store_true")
+args = args.parse_args()
+set_build_type(args.build)
 
 native = find_native_module("native")
+
+if args.wait_for_debugger_present:
+    print("Waiting for debugger to attach...")
+    while not native.IsDebuggerPresent():
+        pass
+
+from py.imgui import *
+from py.rdoc import *
+
+if find_rdoc() is not None:
+    rdoc_load()
 
 class Vertex(ctypes.Structure):
     _fields_ = [
@@ -50,6 +68,8 @@ class MainWindow:
         print(f"Adapter: {adapters[0].GetDesc().Description}")
         self.factory = factory
         self.device = native.CreateDevice(adapters[0], native.D3D_FEATURE_LEVEL._11_0)
+        self.imgui_ctx = ImGuiContext(self.device, self.hwnd)
+
         self.command_queue = self.device.CreateCommandQueue(native.D3D12_COMMAND_QUEUE_DESC(
             Type = native.D3D12_COMMAND_LIST_TYPE.DIRECT,
             Priority = 0,
@@ -136,7 +156,7 @@ class MainWindow:
         self.triangle_root_signature = self.device.CreateRootSignature(
             Bytes = self.triangle_vertex_shader
         )
-        self.triangle_pipeline_state = self.device.CreateGraphicsPipelineState(
+        self.triangle_pso = self.device.CreateGraphicsPipelineState(
             native.D3D12_GRAPHICS_PIPELINE_STATE_DESC(
                 RootSignature = self.triangle_root_signature,
                 VS = native.D3D12_SHADER_BYTECODE(self.triangle_vertex_shader),
@@ -223,7 +243,7 @@ class MainWindow:
                 Flags = native.D3D12_PIPELINE_STATE_FLAGS.NONE
             )
         )
-        assert self.triangle_pipeline_state is not None
+        assert self.triangle_pso is not None
 
        
         self.triangle_vertex_buffer = self.device.CreateCommittedResource(
@@ -250,7 +270,7 @@ class MainWindow:
                 Layout = native.D3D12_TEXTURE_LAYOUT.ROW_MAJOR,
                 Flags = native.D3D12_RESOURCE_FLAGS.NONE
             ),
-            initialState = native.D3D12_RESOURCE_STATES.COPY_DEST,
+            initialState = native.D3D12_RESOURCE_STATES.VERTEX_AND_CONSTANT_BUFFER,
             optimizedClearValue = None
         )
 
@@ -281,10 +301,18 @@ class MainWindow:
         pass
 
     def on_frame(self):
+
+        # !Imgui
+
+        self.imgui_ctx.set_ctx()
+        Im.NewFrame()
+        Im.Begin("Hello, world!")
+        Im.End()
+       
         back_buffer_idx = self.swapchain.GetCurrentBackBufferIndex()
         # print(f"back_buffer_idx = {back_buffer_idx}")
-       # if self.fences[back_buffer_idx].GetCompletedValue() != 1:
-       #     # print(f"Waiting for fence {back_buffer_idx}")
+        # if self.fences[back_buffer_idx].GetCompletedValue() != 1:
+        #     # print(f"Waiting for fence {back_buffer_idx}")
         self.events[back_buffer_idx].Wait()
         self.events[back_buffer_idx].Reset()
 
@@ -319,9 +347,7 @@ class MainWindow:
 
         self.cmd_allocs[back_buffer_idx].Reset()
         cmd_list = self.device.CreateCommandList(NodeMask=0, Type=native.D3D12_COMMAND_LIST_TYPE.DIRECT, Allocator=self.cmd_allocs[back_buffer_idx])
-        cmd_list.SetPipelineState(self.triangle_pipeline_state)
-        cmd_list.SetGraphicsRootSignature(self.triangle_root_signature)
-   
+        
         rtv_heap_offset_cpu = self.rtv_descritor_heap.GetCPUDescriptorHandleForHeapStart().ptr + back_buffer_idx * self.rtv_descriptor_size
         rtv_heap_offset_gpu = self.rtv_descritor_heap.GetGPUDescriptorHandleForHeapStart().ptr + back_buffer_idx * self.rtv_descriptor_size
 
@@ -345,6 +371,7 @@ class MainWindow:
             MinDepth = 0.0,
             MaxDepth = 1.0
         )])
+        
         cmd_list.RSSetScissorRects(Rects=[native.D3D12_RECT(
             left = 0,
             top = 0,
@@ -364,6 +391,11 @@ class MainWindow:
         ])
         cmd_list.OMSetRenderTargets(RenderTargetDescriptors=[native.D3D12_CPU_DESCRIPTOR_HANDLE(rtv_heap_offset_cpu)])
         cmd_list.ClearRenderTargetView(View=native.D3D12_CPU_DESCRIPTOR_HANDLE(rtv_heap_offset_cpu), Color=(0.5, 0.5, 0.5, 1.0), Rects=None)
+        self.imgui_ctx.render(cmd_list)
+        
+        cmd_list.SetPipelineState(self.triangle_pso)
+        cmd_list.SetGraphicsRootSignature(self.triangle_root_signature)
+   
         cmd_list.IASetVertexBuffers(
             StartSlot = 0,
             Views = [
@@ -407,13 +439,12 @@ class MainWindow:
     def run(self):
         pass
 
-if __name__ == "__main__":
-    launch_debugviewpp()
+launch_debugviewpp()
 
-    debug = native.ID3D12Debug()
-    debug.EnableDebugLayer()
+debug = native.ID3D12Debug()
+debug.EnableDebugLayer()
 
-    app = qtw.QApplication([])
-    window = MainWindow()
-    window.run()
-    app.exec_()
+app = qtw.QApplication([])
+window = MainWindow()
+window.run()
+app.exec_()

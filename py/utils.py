@@ -31,6 +31,9 @@ CONSOLE_COLOR_RED = "\033[91m"
 CONSOLE_COLOR_GREEN = "\033[92m"
 CONSOLE_COLOR_END = "\033[0m"
 
+def set_build_type(build_type):
+    os.environ["NATIVE_BUILD_TYPE"] = build_type
+
 def launch_debugviewpp(exe_path=r"bin\\DebugViewpp.exe"):
     # Check if an instance is already running.
     for proc in psutil.process_iter(['name']):
@@ -106,10 +109,15 @@ def find_native_module_path(name):
     
     return None
 
+global_native_module_dict = {}
+
 def find_native_module(name):
     """
         Try to find the native module in the build folder
     """
+    global global_native_module_dict
+    if name in global_native_module_dict:
+        return global_native_module_dict[name]
 
     path = find_native_module_path(name)
     folder = path.parent
@@ -121,6 +129,9 @@ def find_native_module(name):
 
         sys.path.insert(0, str(folder))
         os.add_dll_directory(str(folder))
-        return __import__(name)
+        mod = __import__(name)
+        if mod is not None:
+            global_native_module_dict[name] = mod
+        return mod
     
     raise ImportError(f"Native module {name} not found")

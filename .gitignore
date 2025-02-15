@@ -5,3 +5,4 @@ venv/
 .tmp/
 __pycache__/
 *.egg-info/
+imgui.ini
