@@ -29,6 +29,7 @@ SOFTWARE.
 #include <optional>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <sstream>
 
 namespace py = pybind11;
 using namespace pybind11::literals;
@@ -40,7 +41,9 @@ float square(float x) { return x * x; }
 
 #define ASSERT_HRESULT_PANIC(hr)                                                                                                                                                   \
     if (FAILED(hr)) {                                                                                                                                                              \
-        throw std::runtime_error("" __FILE__ ":" STRINGIFY(__LINE__) " " + std::to_string(hr));                                                                                    \
+        std::stringstream ss;                                                                                                                                                      \
+        ss << std::hex << hr;                                                                                                                                                      \
+        throw std::runtime_error("" __FILE__ ":" STRINGIFY(__LINE__) " HRESULT: 0x" + ss.str());                                                                                   \
     }
 
 #define ASSERT_PANIC(cond)                                                                                                                                                         \
@@ -118,9 +121,9 @@ public:
         if (fence1) fence1->Release();
     }
 
-    void Signal(UINT64 value) { fence->Signal(value); }
-    void GetCompletedValue() { fence->GetCompletedValue(); }
-    void SetEventOnCompletion(UINT64 value, std::shared_ptr<EventWrapper> Event) { fence->SetEventOnCompletion(value, Event->Get()); }
+    void   Signal(UINT64 value) { fence->Signal(value); }
+    UINT64 GetCompletedValue() { return fence->GetCompletedValue(); }
+    void   SetEventOnCompletion(UINT64 value, std::shared_ptr<EventWrapper> Event) { fence->SetEventOnCompletion(value, Event->Get()); }
 };
 class ID3D12PipelineStateWrapper {
 public:
@@ -131,6 +134,45 @@ public:
 
     ~ID3D12PipelineStateWrapper() {
         if (pipelineState) pipelineState->Release();
+    }
+
+    std::string GetISA() {
+        // https://github.com/baldurk/renderdoc/blob/2ace1fe84d62e2b2b5fdd25894dc3186864ee8fe/util/test/demos/dx/official/d3dcommon.h#L1041
+#undef DEFINE_GUID
+#define __DEFINE_GUID(name, l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8) static const GUID name = { l, w1, w2, {b1, b2, b3, b4, b5, b6, b7, b8} }
+        __DEFINE_GUID(WKPDID_CommentStringW, 0xd0149dc0, 0x90e8, 0x4ec8, 0x81, 0x44, 0xe9, 0x00, 0xad, 0x26, 0x6b, 0xb2);
+#undef DEFINE_GUID
+        // https://github.com/baldurk/renderdoc/blob/ca4d79c0a34f4186e8a6ec39a0c9568b5c920ed8/renderdoc/driver/d3d12/d3d12_replay.cpp#L624
+        UINT size = UINT(0);
+        pipelineState->GetPrivateData(WKPDID_CommentStringW, &size, NULL);
+
+        std::string isa = {};
+
+        if (size != UINT(0)) {
+
+            byte *data = new byte[size + UINT(1)];
+
+            memset(data, UINT(0), size);
+
+            pipelineState->GetPrivateData(WKPDID_CommentStringW, &size, data);
+
+            char const *iter       = (char const *)data;
+            char const *cdata_iter = strstr(iter, "![CDATA[");
+
+            if (cdata_iter) {
+                iter                     = cdata_iter + strlen("![CDATA[");
+                char const *comment_iter = strstr(iter, "]]></comment>");
+
+                if (comment_iter) {
+                    isa = std::string(iter, size_t(comment_iter - iter));
+                }
+
+            } else {
+                // Failed to find the right section
+            }
+            delete[] data;
+        }
+        return isa;
     }
 };
 
@@ -388,11 +430,11 @@ public:
         commandList->OMSetRenderTargets(NumRenderTargetDescriptors, renderTargetDescriptors, RTsSingleHandleToDescriptorRange,
                                         pDepthStencilDescriptor ? &pDepthStencilDescriptor.value() : nullptr);
     }
-    void ClearRenderTargetView(D3D12_CPU_DESCRIPTOR_HANDLE RenderTargetView, std::vector<float> ColorRGBA, std::vector<D3D12_RECT> Rects) {
-        UINT NumRects = (UINT)Rects.size();
+    void ClearRenderTargetView(D3D12_CPU_DESCRIPTOR_HANDLE RenderTargetView, std::vector<float> ColorRGBA, std::optional<std::vector<D3D12_RECT>> Rects) {
+        UINT NumRects = Rects ? (UINT)Rects.value().size() : 0;
         ASSERT_PANIC(NumRects <= 8);
         ASSERT_PANIC(ColorRGBA.size() == 4);
-        commandList->ClearRenderTargetView(RenderTargetView, ColorRGBA.data(), NumRects, Rects.data());
+        commandList->ClearRenderTargetView(RenderTargetView, ColorRGBA.data(), NumRects, Rects ? Rects.value().data() : nullptr); 
     }
     void ClearDepthStencilView(D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView, D3D12_CLEAR_FLAGS ClearFlags, FLOAT Depth, UINT8 Stencil, std::vector<D3D12_RECT> Rects) {
         UINT NumRects = (UINT)Rects.size();
@@ -457,6 +499,19 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE Present(UINT SyncInterval, UINT Flags) { return swapChain->Present(SyncInterval, Flags); }
+
+    std::shared_ptr<ID3D12ResourceWrapper> GetBuffer(UINT Buffer) {
+        ID3D12Resource *resource = nullptr;
+        HRESULT         hr       = swapChain->GetBuffer(Buffer, IID_PPV_ARGS(&resource));
+        ASSERT_HRESULT_PANIC(hr);
+        return std::make_shared<ID3D12ResourceWrapper>(resource);
+    }
+
+    uint32_t GetCurrentBackBufferIndex() { return swapChain3->GetCurrentBackBufferIndex(); }
+
+    void ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+        swapChain->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    }
 };
 
 class IDXGIAdapterWrapper {
@@ -499,7 +554,7 @@ public:
 
 class ID3D12DebugWrapper {
 public:
-    ID3D12Debug *debug = nullptr;
+    ID3D12Debug * debug  = nullptr;
     ID3D12Debug1 *debug1 = nullptr;
 
 public:
@@ -518,6 +573,39 @@ public:
 
     void SetEnableGPUBasedValidation(BOOL Enable) { debug1->SetEnableGPUBasedValidation(Enable); }
 };
+
+#if 0
+class DXGI_SWAP_CHAIN_DESC_Wrapper {
+public:
+    DXGI_MODE_DESC   BufferDesc;
+    DXGI_SAMPLE_DESC SampleDesc;
+    DXGI_USAGE       BufferUsage;
+    UINT             BufferCount;
+    uint64_t         OutputWindow;
+    BOOL             Windowed;
+    DXGI_SWAP_EFFECT SwapEffect;
+    UINT             Flags;
+
+public:
+    DXGI_SWAP_CHAIN_DESC_Wrapper(DXGI_MODE_DESC BufferDesc, DXGI_SAMPLE_DESC SampleDesc, DXGI_USAGE BufferUsage, UINT BufferCount, uint64_t OutputWindow, BOOL Windowed,
+                                 DXGI_SWAP_EFFECT SwapEffect, UINT Flags)
+        : BufferDesc(BufferDesc), SampleDesc(SampleDesc), BufferUsage(BufferUsage), BufferCount(BufferCount), OutputWindow(OutputWindow), Windowed(Windowed),
+          SwapEffect(SwapEffect), Flags(Flags) {}
+
+    DXGI_SWAP_CHAIN_DESC ToNative() {
+        DXGI_SWAP_CHAIN_DESC desc = {};
+        desc.BufferDesc           = BufferDesc;
+        desc.SampleDesc           = SampleDesc;
+        desc.BufferUsage          = BufferUsage;
+        desc.BufferCount          = BufferCount;
+        desc.OutputWindow         = (HWND)OutputWindow;
+        desc.Windowed             = Windowed;
+        desc.SwapEffect           = SwapEffect;
+        desc.Flags                = Flags;
+        return desc;
+    }
+};
+#endif
 
 class IDXGIFactoryWrapper {
 public:
@@ -583,9 +671,9 @@ public:
     //     _In_ DXGI_SWAP_CHAIN_DESC *pDesc,
     //     /* [annotation][out] */
     //     _COM_Outptr_ IDXGISwapChain **ppSwapChain) = 0;
-    std::shared_ptr<IDXGISwapChainWrapper> CreateSwapChain(std::shared_ptr<ID3D12CommandQueueWrapper> commandQueue, DXGI_SWAP_CHAIN_DESC *desc) {
+    std::shared_ptr<IDXGISwapChainWrapper> CreateSwapChain(std::shared_ptr<ID3D12CommandQueueWrapper> commandQueue, DXGI_SWAP_CHAIN_DESC desc) {
         IDXGISwapChain *swapChain = nullptr;
-        HRESULT         hr        = factory->CreateSwapChain(commandQueue->commandQueue, desc, &swapChain);
+        HRESULT         hr        = factory->CreateSwapChain(commandQueue->commandQueue, &desc, &swapChain);
         ASSERT_HRESULT_PANIC(hr);
         return std::make_shared<IDXGISwapChainWrapper>(swapChain);
     }
@@ -606,45 +694,80 @@ public:
     }
 };
 
-class D3D12_GRAPHICS_PIPELINE_STATE_DESC_Wrapper {
+class D3D12_INPUT_ELEMENT_DESC_Wrapper {
 public:
-    std::shared_ptr<ID3D12RootSignatureWrapper>    pRootSignature        = {};
-    std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper> VS                    = {};
-    std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper> PS                    = {};
-    std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper> DS                    = {};
-    std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper> HS                    = {};
-    std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper> GS                    = {};
-    D3D12_STREAM_OUTPUT_DESC                       StreamOutput          = {};
-    D3D12_BLEND_DESC                               BlendState            = {};
-    UINT                                           SampleMask            = {};
-    D3D12_RASTERIZER_DESC                          RasterizerState       = {};
-    D3D12_DEPTH_STENCIL_DESC                       DepthStencilState     = {};
-    D3D12_INPUT_LAYOUT_DESC                        InputLayout           = {};
-    D3D12_INDEX_BUFFER_STRIP_CUT_VALUE             IBStripCutValue       = {};
-    D3D12_PRIMITIVE_TOPOLOGY_TYPE                  PrimitiveTopologyType = {};
-    UINT                                           NumRenderTargets      = {};
-    std::array<DXGI_FORMAT, 8>                     RTVFormats            = {};
-    DXGI_FORMAT                                    DSVFormat             = {};
-    DXGI_SAMPLE_DESC                               SampleDesc            = {};
-    UINT                                           NodeMask              = {};
-    D3D12_CACHED_PIPELINE_STATE                    CachedPSO             = {};
-    D3D12_PIPELINE_STATE_FLAGS                     Flags                 = {};
+    std::string                SemanticName         = {};
+    UINT                       SemanticIndex        = {};
+    DXGI_FORMAT                Format               = {};
+    UINT                       InputSlot            = {};
+    UINT                       AlignedByteOffset    = {};
+    D3D12_INPUT_CLASSIFICATION InputSlotClass       = {};
+    UINT                       InstanceDataStepRate = {};
 
 public:
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC_Wrapper(std::shared_ptr<ID3D12RootSignatureWrapper>    pRootSignature = {}, //
-                                               std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper> VS             = {}, //
-                                               std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper> PS             = {}, //
-                                               std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper> DS             = {}, //
-                                               std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper> HS             = {}, //
-                                               std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper> GS             = {}, //
-                                               D3D12_STREAM_OUTPUT_DESC StreamOutput = {}, D3D12_BLEND_DESC BlendState = {}, UINT SampleMask = {},
-                                               D3D12_RASTERIZER_DESC RasterizerState = {}, D3D12_DEPTH_STENCIL_DESC DepthStencilState = {},
-                                               D3D12_INPUT_LAYOUT_DESC InputLayout = {}, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue = {},
-                                               D3D12_PRIMITIVE_TOPOLOGY_TYPE PrimitiveTopologyType = {}, UINT NumRenderTargets = {}, std::array<DXGI_FORMAT, 8> RTVFormats = {},
-                                               DXGI_FORMAT DSVFormat = {}, DXGI_SAMPLE_DESC SampleDesc = {}, UINT NodeMask = {}, D3D12_CACHED_PIPELINE_STATE CachedPSO = {},
-                                               D3D12_PIPELINE_STATE_FLAGS Flags = {})
+    D3D12_INPUT_ELEMENT_DESC_Wrapper() = default;
+    D3D12_INPUT_ELEMENT_DESC_Wrapper(std::string SemanticName, UINT SemanticIndex, DXGI_FORMAT Format, UINT InputSlot, UINT AlignedByteOffset,
+                                     D3D12_INPUT_CLASSIFICATION InputSlotClass, UINT InstanceDataStepRate)
+        : SemanticName(SemanticName), SemanticIndex(SemanticIndex), Format(Format), InputSlot(InputSlot), AlignedByteOffset(AlignedByteOffset), InputSlotClass(InputSlotClass),
+          InstanceDataStepRate(InstanceDataStepRate) {}
+
+    D3D12_INPUT_ELEMENT_DESC ToNative() {
+        D3D12_INPUT_ELEMENT_DESC desc = {};
+        desc.SemanticName             = SemanticName.c_str();
+        desc.SemanticIndex            = SemanticIndex;
+        desc.Format                   = Format;
+        desc.InputSlot                = InputSlot;
+        desc.AlignedByteOffset        = AlignedByteOffset;
+        desc.InputSlotClass           = InputSlotClass;
+        desc.InstanceDataStepRate     = InstanceDataStepRate;
+        return desc;
+    }
+};
+
+class D3D12_GRAPHICS_PIPELINE_STATE_DESC_Wrapper {
+public:
+    std::shared_ptr<ID3D12RootSignatureWrapper>                    pRootSignature        = {};
+    std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 VS                    = {};
+    std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 PS                    = {};
+    std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 DS                    = {};
+    std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 HS                    = {};
+    std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 GS                    = {};
+    D3D12_STREAM_OUTPUT_DESC                                       StreamOutput          = {};
+    D3D12_BLEND_DESC                                               BlendState            = {};
+    UINT                                                           SampleMask            = {};
+    D3D12_RASTERIZER_DESC                                          RasterizerState       = {};
+    D3D12_DEPTH_STENCIL_DESC                                       DepthStencilState     = {};
+    std::vector<std::shared_ptr<D3D12_INPUT_ELEMENT_DESC_Wrapper>> InputLayouts          = {};
+    D3D12_INDEX_BUFFER_STRIP_CUT_VALUE                             IBStripCutValue       = {};
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE                                  PrimitiveTopologyType = {};
+    UINT                                                           NumRenderTargets      = {};
+    std::vector<DXGI_FORMAT>                                       RTVFormats            = {};
+    DXGI_FORMAT                                                    DSVFormat             = {};
+    DXGI_SAMPLE_DESC                                               SampleDesc            = {};
+    UINT                                                           NodeMask              = {};
+    std::optional<D3D12_CACHED_PIPELINE_STATE>                     CachedPSO             = {};
+    D3D12_PIPELINE_STATE_FLAGS                                     Flags                 = {};
+
+    std::vector<D3D12_INPUT_ELEMENT_DESC> cache_InputLayouts = {};
+
+public:
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC_Wrapper(std::shared_ptr<ID3D12RootSignatureWrapper>                    pRootSignature    = {}, //
+                                               std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 VS                = {}, //
+                                               std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 PS                = {}, //
+                                               std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 DS                = {}, //
+                                               std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 HS                = {}, //
+                                               std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 GS                = {}, //
+                                               D3D12_STREAM_OUTPUT_DESC                                       StreamOutput      = {}, //
+                                               D3D12_BLEND_DESC                                               BlendState        = {}, //
+                                               UINT                                                           SampleMask        = {}, //
+                                               D3D12_RASTERIZER_DESC                                          RasterizerState   = {}, //
+                                               D3D12_DEPTH_STENCIL_DESC                                       DepthStencilState = {}, //
+                                               std::vector<std::shared_ptr<D3D12_INPUT_ELEMENT_DESC_Wrapper>> InputLayouts      = {}, //
+                                               D3D12_INDEX_BUFFER_STRIP_CUT_VALUE IBStripCutValue = {}, D3D12_PRIMITIVE_TOPOLOGY_TYPE PrimitiveTopologyType = {},
+                                               UINT NumRenderTargets = {}, std::vector<DXGI_FORMAT> RTVFormats = {}, DXGI_FORMAT DSVFormat = {}, DXGI_SAMPLE_DESC SampleDesc = {},
+                                               UINT NodeMask = {}, std::optional<D3D12_CACHED_PIPELINE_STATE> CachedPSO = {}, D3D12_PIPELINE_STATE_FLAGS Flags = {})
         : pRootSignature(pRootSignature), VS(VS), PS(PS), DS(DS), HS(HS), GS(GS), StreamOutput(StreamOutput), BlendState(BlendState), SampleMask(SampleMask),
-          RasterizerState(RasterizerState), DepthStencilState(DepthStencilState), InputLayout(InputLayout), IBStripCutValue(IBStripCutValue),
+          RasterizerState(RasterizerState), DepthStencilState(DepthStencilState), InputLayouts(InputLayouts), IBStripCutValue(IBStripCutValue),
           PrimitiveTopologyType(PrimitiveTopologyType), NumRenderTargets(NumRenderTargets), RTVFormats(RTVFormats), DSVFormat(DSVFormat), SampleDesc(SampleDesc),
           NodeMask(NodeMask), CachedPSO(CachedPSO), Flags(Flags) {}
 
@@ -661,17 +784,25 @@ public:
         desc.SampleMask                         = SampleMask;
         desc.RasterizerState                    = RasterizerState;
         desc.DepthStencilState                  = DepthStencilState;
-        desc.InputLayout                        = InputLayout;
-        desc.IBStripCutValue                    = IBStripCutValue;
-        desc.PrimitiveTopologyType              = PrimitiveTopologyType;
-        desc.NumRenderTargets                   = NumRenderTargets;
-        for (UINT i = 0; i < 8; i++) {
+        desc.InputLayout.NumElements            = (UINT)InputLayouts.size();
+        cache_InputLayouts.resize(desc.InputLayout.NumElements);
+        for (UINT i = 0; i < desc.InputLayout.NumElements; i++) {
+            cache_InputLayouts[i] = InputLayouts[i]->ToNative();
+        }
+        desc.InputLayout.pInputElementDescs = cache_InputLayouts.data();
+        desc.IBStripCutValue                = IBStripCutValue;
+        desc.PrimitiveTopologyType          = PrimitiveTopologyType;
+        desc.NumRenderTargets               = NumRenderTargets;
+        for (UINT i = 0; i < NumRenderTargets; i++) {
             desc.RTVFormats[i] = RTVFormats[i];
+        }
+        for (UINT i = NumRenderTargets; i < 8; i++) {
+            desc.RTVFormats[i] = DXGI_FORMAT_UNKNOWN;
         }
         desc.DSVFormat  = DSVFormat;
         desc.SampleDesc = SampleDesc;
         desc.NodeMask   = NodeMask;
-        desc.CachedPSO  = CachedPSO;
+        desc.CachedPSO  = CachedPSO ? CachedPSO.value() : D3D12_CACHED_PIPELINE_STATE{};
         desc.Flags      = Flags;
         return desc;
     }
@@ -780,6 +911,7 @@ public:
         ASSERT_HRESULT_PANIC(hr);
         return std::make_shared<ID3D12PipelineStateWrapper>(pipelineState);
     }
+    UINT GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType) { return device->GetDescriptorHandleIncrementSize(DescriptorHeapType); }
     std::shared_ptr<ID3D12PipelineStateWrapper> CreateComputePipelineState(std::shared_ptr<D3D12_COMPUTE_PIPELINE_STATE_DESC_Wrapper> desc) {
         ID3D12PipelineState *pipelineState = nullptr;
         HRESULT              hr            = device->CreateComputePipelineState(&desc->ToNative(), IID_PPV_ARGS(&pipelineState));
@@ -824,8 +956,20 @@ static std::shared_ptr<ID3D12DeviceWrapper> CreateDevice(std::shared_ptr<IDXGIAd
     return std::make_shared<ID3D12DeviceWrapper>(device);
 }
 
+static py::tuple GetWindowSize(uint64_t hwnd_int) {
+    HWND hwnd = reinterpret_cast<HWND>(hwnd_int);
+    RECT rect;
+    if (GetClientRect(hwnd, &rect)) {
+        int width  = rect.right - rect.left;
+        int height = rect.bottom - rect.top;
+        return py::make_tuple(width, height);
+    }
+    throw std::runtime_error("Unable to retrieve window size.");
+}
+
 PYBIND11_MODULE(native, m) {
     m.def("square", &square);
+    m.def("GetWindowSize", &GetWindowSize);
 
     py::enum_<DXGI_SWAP_EFFECT>(m, "DXGI_SWAP_EFFECT")
         .value("DISCARD", DXGI_SWAP_EFFECT_DISCARD)
@@ -953,41 +1097,138 @@ PYBIND11_MODULE(native, m) {
         .value("B4G4R4A4_UNORM", DXGI_FORMAT_B4G4R4A4_UNORM)
         .export_values();
 
-    py::class_<DXGI_SWAP_CHAIN_DESC>(m, "DXGI_SWAP_CHAIN_DESC") //
-        .def(py::init())                                        //
-        .def(py::init([](UINT width, UINT height, DXGI_FORMAT format, UINT bufferCount, uint64_t outputWindow, BOOL windowed, DXGI_SWAP_EFFECT swapEffect, UINT flags) {
-                 DXGI_SWAP_CHAIN_DESC desc = {};
-                 desc.BufferDesc.Width     = width;
-                 desc.BufferDesc.Height    = height;
-                 desc.BufferDesc.Format    = format;
-                 desc.BufferCount          = bufferCount;
-                 desc.OutputWindow         = (HWND)outputWindow;
-                 desc.Windowed             = windowed;
-                 desc.SwapEffect           = swapEffect;
-                 desc.Flags                = flags;
-                 return desc;
-             }),                                                                                                            //
-             "Width"_a, "Height"_a, "Format"_a, "BufferCount"_a, "OutputWindow"_a, "Windowed"_a, "SwapEffect"_a, "Flags"_a) //
-
-        .def_readwrite("BufferDesc", &DXGI_SWAP_CHAIN_DESC::BufferDesc)     //
-        .def_readwrite("SampleDesc", &DXGI_SWAP_CHAIN_DESC::SampleDesc)     //
-        .def_readwrite("BufferUsage", &DXGI_SWAP_CHAIN_DESC::BufferUsage)   //
-        .def_readwrite("BufferCount", &DXGI_SWAP_CHAIN_DESC::BufferCount)   //
-        .def_readwrite("OutputWindow", &DXGI_SWAP_CHAIN_DESC::OutputWindow) //
-        .def_readwrite("Windowed", &DXGI_SWAP_CHAIN_DESC::Windowed)         //
-        .def_readwrite("SwapEffect", &DXGI_SWAP_CHAIN_DESC::SwapEffect)     //
-        .def_readwrite("Flags", &DXGI_SWAP_CHAIN_DESC::Flags)               //
-        ;
-
     py::class_<IDXGIAdapterWrapper, std::shared_ptr<IDXGIAdapterWrapper>>(m, "IDXGIAdapter") //
         .def(py::init<IDXGIAdapter *>())                                                     //
         .def("GetDesc", &IDXGIAdapterWrapper::GetDesc)                                       //
         ;
 
+    py::class_<IDXGISwapChainWrapper, std::shared_ptr<IDXGISwapChainWrapper>>(m, "IDXGISwapChain")                                              //
+        .def(py::init<IDXGISwapChain *>())                                                                                                      //
+        .def("GetBuffer", &IDXGISwapChainWrapper::GetBuffer)                                                                                    //
+        .def("Present", &IDXGISwapChainWrapper::Present)                                                                                        //
+        .def("ResizeBuffers", &IDXGISwapChainWrapper::ResizeBuffers, "BufferCount"_a, "Width"_a, "Height"_a, "NewFormat"_a, "SwapChainFlags"_a) //
+        .def("GetCurrentBackBufferIndex", &IDXGISwapChainWrapper::GetCurrentBackBufferIndex)                                                    //
+
+        ;
+
+    py::enum_<DXGI_MODE_SCALING>(m, "DXGI_MODE_SCALING")     //
+        .value("UNSPECIFIED", DXGI_MODE_SCALING_UNSPECIFIED) //
+        .value("CENTERED", DXGI_MODE_SCALING_CENTERED)       //
+        .value("STRETCHED", DXGI_MODE_SCALING_STRETCHED)     //
+        .export_values();
+    py::enum_<DXGI_MODE_SCANLINE_ORDER>(m, "DXGI_MODE_SCANLINE_ORDER")          //
+        .value("UNSPECIFIED", DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED)             //
+        .value("PROGRESSIVE", DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE)             //
+        .value("UPPER_FIELD_FIRST", DXGI_MODE_SCANLINE_ORDER_UPPER_FIELD_FIRST) //
+        .value("LOWER_FIELD_FIRST", DXGI_MODE_SCANLINE_ORDER_LOWER_FIELD_FIRST) //
+        .export_values();
+    py::class_<DXGI_SAMPLE_DESC>(m, "DXGI_SAMPLE_DESC") //
+        .def(py::init([](UINT Count, UINT Quality) {
+                 DXGI_SAMPLE_DESC desc = {};
+                 desc.Count            = Count;
+                 desc.Quality          = Quality;
+                 return desc;
+             }),
+             "Count"_a, "Quality"_a)                          //
+        .def_readwrite("Count", &DXGI_SAMPLE_DESC::Count)     //
+        .def_readwrite("Quality", &DXGI_SAMPLE_DESC::Quality) //
+        ;
+
+    py::class_<DXGI_RATIONAL>(m, "DXGI_RATIONAL") //
+        .def(py::init([](UINT Numerator, UINT Denominator) {
+                 DXGI_RATIONAL rational = {};
+                 rational.Numerator     = Numerator;
+                 rational.Denominator   = Denominator;
+                 return rational;
+             }),
+             "Numerator"_a, "Denominator"_a)                       //
+        .def_readwrite("Numerator", &DXGI_RATIONAL::Numerator)     //
+        .def_readwrite("Denominator", &DXGI_RATIONAL::Denominator) //
+        ;
+    py::class_<DXGI_MODE_DESC>(m, "DXGI_MODE_DESC") //
+        .def(py::init([](UINT width, UINT height, DXGI_RATIONAL refreshRate, DXGI_FORMAT format, DXGI_MODE_SCANLINE_ORDER scanlineOrdering, DXGI_MODE_SCALING scaling) {
+                 DXGI_MODE_DESC desc   = {};
+                 desc.Width            = width;
+                 desc.Height           = height;
+                 desc.RefreshRate      = refreshRate;
+                 desc.Format           = format;
+                 desc.ScanlineOrdering = scanlineOrdering;
+                 desc.Scaling          = scaling;
+                 return desc;
+             }),
+             "Width"_a, "Height"_a, "RefreshRate"_a, "Format"_a, "ScanlineOrdering"_a, "Scaling"_a) //
+        .def_readwrite("Width", &DXGI_MODE_DESC::Width)                                             //
+        .def_readwrite("Height", &DXGI_MODE_DESC::Height)                                           //
+        .def_readwrite("RefreshRate", &DXGI_MODE_DESC::RefreshRate)                                 //
+        .def_readwrite("Format", &DXGI_MODE_DESC::Format)                                           //
+        .def_readwrite("ScanlineOrdering", &DXGI_MODE_DESC::ScanlineOrdering)                       //
+        .def_readwrite("Scaling", &DXGI_MODE_DESC::Scaling)                                         //
+        ;
+
+    enum DXGI_USAGE_Proxy : uint32_t {
+        NONE                 = 0,
+        BACK_BUFFER          = DXGI_USAGE_BACK_BUFFER,
+        SHADER_INPUT         = DXGI_USAGE_SHADER_INPUT,
+        RENDER_TARGET_OUTPUT = DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        SHARED               = DXGI_USAGE_SHARED,
+        READ_ONLY            = DXGI_USAGE_READ_ONLY,
+        DISCARD_ON_PRESENT   = DXGI_USAGE_DISCARD_ON_PRESENT,
+        UNORDERED_ACCESS     = DXGI_USAGE_UNORDERED_ACCESS,
+    };
+
+    py::enum_<DXGI_USAGE_Proxy>(m, "DXGI_USAGE", py::arithmetic())             //
+        .value("BACK_BUFFER", DXGI_USAGE_Proxy::BACK_BUFFER)                   //
+        .value("SHADER_INPUT", DXGI_USAGE_Proxy::SHADER_INPUT)                 //
+        .value("RENDER_TARGET_OUTPUT", DXGI_USAGE_Proxy::RENDER_TARGET_OUTPUT) //
+        .value("SHARED", DXGI_USAGE_Proxy::SHARED)                             //
+        .value("READ_ONLY", DXGI_USAGE_Proxy::READ_ONLY)                       //
+        .value("DISCARD_ON_PRESENT", DXGI_USAGE_Proxy::DISCARD_ON_PRESENT)     //
+        .value("UNORDERED_ACCESS", DXGI_USAGE_Proxy::UNORDERED_ACCESS)         //
+        .export_values();
+
+    py::enum_<DXGI_SWAP_CHAIN_FLAG>(m, "DXGI_SWAP_CHAIN_FLAG", py::arithmetic())                        //
+        .value("NONPREROTATED", DXGI_SWAP_CHAIN_FLAG_NONPREROTATED)                                     //
+        .value("ALLOW_MODE_SWITCH", DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH)                             //
+        .value("GDI_COMPATIBLE", DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE)                                   //
+        .value("RESTRICTED_CONTENT", DXGI_SWAP_CHAIN_FLAG_RESTRICTED_CONTENT)                           //
+        .value("RESTRICT_SHARED_RESOURCE_DRIVER", DXGI_SWAP_CHAIN_FLAG_RESTRICT_SHARED_RESOURCE_DRIVER) //
+        .value("DISPLAY_ONLY", DXGI_SWAP_CHAIN_FLAG_DISPLAY_ONLY)                                       //
+        .value("FRAME_LATENCY_WAITABLE_OBJECT", DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)     //
+        .value("FOREGROUND_LAYER", DXGI_SWAP_CHAIN_FLAG_FOREGROUND_LAYER)                               //
+        .value("FULLSCREEN_VIDEO", DXGI_SWAP_CHAIN_FLAG_FULLSCREEN_VIDEO)                               //
+        .value("YUV_VIDEO", DXGI_SWAP_CHAIN_FLAG_YUV_VIDEO)                                             //
+        .export_values();
+
+    py::class_<DXGI_SWAP_CHAIN_DESC>(m, "DXGI_SWAP_CHAIN_DESC") //
+        .def(py::init())                                        //
+        .def(py::init([](DXGI_MODE_DESC BufferDesc, DXGI_SAMPLE_DESC SampleDesc, uint32_t BufferUsage, UINT BufferCount, uint64_t OutputWindow, BOOL Windowed,
+                         DXGI_SWAP_EFFECT SwapEffect, DXGI_SWAP_CHAIN_FLAG Flags = (DXGI_SWAP_CHAIN_FLAG)0) {
+                 return DXGI_SWAP_CHAIN_DESC{BufferDesc, SampleDesc, (uint32_t)BufferUsage, BufferCount, (HWND)OutputWindow, Windowed, SwapEffect, (UINT)Flags};
+             }),
+             "BufferDesc"_a, "SampleDesc"_a, "BufferUsage"_a, "BufferCount"_a, "OutputWindow"_a, "Windowed"_a, "SwapEffect"_a, "Flags"_a) //
+        ;
+
+    // py::class_<DXGI_SWAP_CHAIN_DESC_Wrapper>(m, "DXGI_SWAP_CHAIN_DESC") //
+    //     .def(py::init())                                                //
+    //     .def(py::init([](DXGI_MODE_DESC BufferDesc, DXGI_SAMPLE_DESC SampleDesc, DXGI_USAGE BufferUsage, UINT BufferCount, uint64_t OutputWindow, BOOL Windowed,
+    //                      DXGI_SWAP_EFFECT SwapEffect,
+    //                      UINT Flags) { return DXGI_SWAP_CHAIN_DESC_Wrapper{BufferDesc, SampleDesc, BufferUsage, BufferCount, OutputWindow, Windowed, SwapEffect, Flags}; }), //
+    //          "BufferDesc"_a, "SampleDesc"_a, "BufferUsage"_a, "BufferCount"_a, "OutputWindow"_a, "Windowed"_a, "SwapEffect"_a, "Flags"_a)                                    //
+    //     .def_readwrite("BufferDesc", &DXGI_SWAP_CHAIN_DESC_Wrapper::BufferDesc)                                                                                              //
+    //     .def_readwrite("SampleDesc", &DXGI_SWAP_CHAIN_DESC_Wrapper::SampleDesc)                                                                                              //
+    //     .def_readwrite("BufferUsage", &DXGI_SWAP_CHAIN_DESC_Wrapper::BufferUsage)                                                                                            //
+    //     .def_readwrite("BufferCount", &DXGI_SWAP_CHAIN_DESC_Wrapper::BufferCount)                                                                                            //
+    //     .def_readwrite("OutputWindow", &DXGI_SWAP_CHAIN_DESC_Wrapper::OutputWindow)                                                                                          //
+    //     .def_readwrite("Windowed", &DXGI_SWAP_CHAIN_DESC_Wrapper::Windowed)                                                                                                  //
+    //     .def_readwrite("SwapEffect", &DXGI_SWAP_CHAIN_DESC_Wrapper::SwapEffect)                                                                                              //
+    //     .def_readwrite("Flags", &DXGI_SWAP_CHAIN_DESC_Wrapper::Flags)                                                                                                        //
+    //     ;
+
     py::class_<IDXGIFactoryWrapper, std::shared_ptr<IDXGIFactoryWrapper>>(m, "IDXGIFactory") //
         .def(py::init())                                                                     //
         .def("GetAdapter", &IDXGIFactoryWrapper::GetAdapter)                                 //
         .def("EnumAdapters", &IDXGIFactoryWrapper::EnumAdapters)                             //
+        .def("CreateSwapChain", &IDXGIFactoryWrapper::CreateSwapChain)                       //
         ;
 
     py::class_<ID3D12RootSignatureWrapper, std::shared_ptr<ID3D12RootSignatureWrapper>>(m, "ID3D12RootSignature") //
@@ -1180,19 +1421,6 @@ PYBIND11_MODULE(native, m) {
         .value("TEXTURE3D", D3D12_RESOURCE_DIMENSION_TEXTURE3D)
         .export_values();
 
-    py::class_<DXGI_SAMPLE_DESC>(m, "DXGI_SAMPLE_DESC") //
-        .def(py::init())                                //
-        .def(py::init([](UINT Count, UINT Quality) {
-                 DXGI_SAMPLE_DESC desc = {};
-                 desc.Count            = Count;
-                 desc.Quality          = Quality;
-                 return desc;
-             }),
-             "Count"_a = 1, "Quality"_a = 0)                  //
-        .def_readwrite("Count", &DXGI_SAMPLE_DESC::Count)     //
-        .def_readwrite("Quality", &DXGI_SAMPLE_DESC::Quality) //
-        ;
-
     py::enum_<D3D12_RESOURCE_FLAGS>(m, "D3D12_RESOURCE_FLAGS", py::arithmetic())
         .value("NONE", D3D12_RESOURCE_FLAG_NONE)
         .value("ALLOW_RENDER_TARGET", D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
@@ -1298,6 +1526,7 @@ PYBIND11_MODULE(native, m) {
         .def("GetGPUVirtualAddress", &ID3D12ResourceWrapper::GetGPUVirtualAddress)                                                  //
         .def("Map", &ID3D12ResourceWrapper::Map, "Subresource"_a = 0, "ReadRange"_a = std::optional<D3D12_RANGE>{std::nullopt})     //
         .def("Unmap", &ID3D12ResourceWrapper::Unmap, "Subresource"_a = 0, "ReadRange"_a = std::optional<D3D12_RANGE>{std::nullopt}) //
+        .def("GetDesc", &ID3D12ResourceWrapper::GetDesc)                                                                            //
         ;
 
     py::enum_<D3D12_COMMAND_LIST_TYPE>(m, "D3D12_COMMAND_LIST_TYPE")
@@ -1329,6 +1558,7 @@ PYBIND11_MODULE(native, m) {
         .def_readwrite("NodeMask", &D3D12_COMMAND_QUEUE_DESC::NodeMask)                                                                //
         ;
     py::class_<ID3D12PipelineStateWrapper, std::shared_ptr<ID3D12PipelineStateWrapper>>(m, "ID3D12PipelineState") //
+        .def("GetISA", &ID3D12PipelineStateWrapper::GetISA)                                                       //
         ;
     py::class_<ID3D12CommandQueueWrapper, std::shared_ptr<ID3D12CommandQueueWrapper>>(m, "ID3D12CommandQueue")
         .def("ExecuteCommandLists", &ID3D12CommandQueueWrapper::ExecuteCommandLists, "CommandLists"_a) //
@@ -1444,6 +1674,60 @@ PYBIND11_MODULE(native, m) {
         .def_readwrite("UAV", &D3D12_RESOURCE_BARRIER::UAV)               //
         ;
 
+    py::class_<D3D12_VERTEX_BUFFER_VIEW>(m, "D3D12_VERTEX_BUFFER_VIEW") //
+        .def(py::init())                                                //
+        .def(py::init([](D3D12_GPU_VIRTUAL_ADDRESS BufferLocation, UINT SizeInBytes, UINT StrideInBytes) {
+                 D3D12_VERTEX_BUFFER_VIEW view = {};
+                 view.BufferLocation           = BufferLocation;
+                 view.SizeInBytes              = SizeInBytes;
+                 view.StrideInBytes            = StrideInBytes;
+                 return view;
+             }),
+             "BufferLocation"_a = 0, "SizeInBytes"_a = 0, "StrideInBytes"_a = 0)    //
+        .def_readwrite("BufferLocation", &D3D12_VERTEX_BUFFER_VIEW::BufferLocation) //
+        .def_readwrite("SizeInBytes", &D3D12_VERTEX_BUFFER_VIEW::SizeInBytes)       //
+        .def_readwrite("StrideInBytes", &D3D12_VERTEX_BUFFER_VIEW::StrideInBytes)   //
+        ;
+
+    py::class_<D3D12_RECT>(m, "D3D12_RECT") //
+        .def(py::init())                    //
+        .def(py::init([](LONG left, LONG top, LONG right, LONG bottom) {
+                 D3D12_RECT rect = {};
+                 rect.left       = left;
+                 rect.top        = top;
+                 rect.right      = right;
+                 rect.bottom     = bottom;
+                 return rect;
+             }),
+             "left"_a = 0, "top"_a = 0, "right"_a = 0, "bottom"_a = 0) //
+        .def_readwrite("left", &D3D12_RECT::left)                      //
+        .def_readwrite("top", &D3D12_RECT::top)                        //
+        .def_readwrite("right", &D3D12_RECT::right)                    //
+        .def_readwrite("bottom", &D3D12_RECT::bottom)                  //
+        ;
+    py::class_<D3D12_VIEWPORT>(m, "D3D12_VIEWPORT") //
+        .def(py::init())                            //
+        .def(py::init([](FLOAT TopLeftX, FLOAT TopLeftY, FLOAT Width, FLOAT Height, FLOAT MinDepth, FLOAT MaxDepth) {
+                 D3D12_VIEWPORT viewport = {};
+                 viewport.TopLeftX       = TopLeftX;
+                 viewport.TopLeftY       = TopLeftY;
+                 viewport.Width          = Width;
+                 viewport.Height         = Height;
+                 viewport.MinDepth       = MinDepth;
+                 viewport.MaxDepth       = MaxDepth;
+                 return viewport;
+             }),
+             "TopLeftX"_a = 0, "TopLeftY"_a = 0, "Width"_a = 0, "Height"_a = 0, "MinDepth"_a = 0, "MaxDepth"_a = 0) //
+        .def_readwrite("TopLeftX", &D3D12_VIEWPORT::TopLeftX)                                                       //
+        .def_readwrite("TopLeftY", &D3D12_VIEWPORT::TopLeftY)                                                       //
+        .def_readwrite("Width", &D3D12_VIEWPORT::Width)                                                             //
+        .def_readwrite("Height", &D3D12_VIEWPORT::Height)                                                           //
+        .def_readwrite("MinDepth", &D3D12_VIEWPORT::MinDepth)                                                       //
+        .def_readwrite("MaxDepth", &D3D12_VIEWPORT::MaxDepth)                                                       //
+        ;
+
+    // !COMMAND LIST
+
     py::class_<ID3D12GraphicsCommandListWrapper, std::shared_ptr<ID3D12GraphicsCommandListWrapper>>(m, "ID3D12GraphicsCommandList")                              //
         .def(py::init<ID3D12GraphicsCommandList *>())                                                                                                            //
         .def("Close", &ID3D12GraphicsCommandListWrapper::Close)                                                                                                  //
@@ -1459,6 +1743,542 @@ PYBIND11_MODULE(native, m) {
         .def("Dispatch", &ID3D12GraphicsCommandListWrapper::Dispatch, "ThreadGroupCountX"_a, "ThreadGroupCountY"_a, "ThreadGroupCountZ"_a)                          //
         .def("CopyBufferRegion", &ID3D12GraphicsCommandListWrapper::CopyBufferRegion, "DestBuffer"_a, "DestOffset"_a, "SrcBuffer"_a, "SrcOffset"_a, "NumBytes"_a)   //
         .def("ResourceBarrier", &ID3D12GraphicsCommandListWrapper::ResourceBarrier, "Barriers"_a)                                                                   //
+        .def("IASetVertexBuffers", &ID3D12GraphicsCommandListWrapper::IASetVertexBuffers, "StartSlot"_a, "Views"_a)                                                 //
+        .def("IASetIndexBuffer", &ID3D12GraphicsCommandListWrapper::IASetIndexBuffer, "View"_a)                                                                     //
+        .def("IASetPrimitiveTopology", &ID3D12GraphicsCommandListWrapper::IASetPrimitiveTopology, "Topology"_a)                                                    //
+        .def("DrawIndexedInstanced", &ID3D12GraphicsCommandListWrapper::DrawIndexedInstanced, "IndexCountPerInstance"_a, "InstanceCount"_a, "StartIndexLocation"_a,
+             "BaseVertexLocation"_a, "StartInstanceLocation"_a)                                                                                                    //
+        .def("SetGraphicsRootSignature", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootSignature, "RootSignature"_a)                                           //
+        .def("SetGraphicsRoot32BitConstant", &ID3D12GraphicsCommandListWrapper::SetGraphicsRoot32BitConstant, "RootParameterIndex"_a, "SrcData"_a, "DestOffset"_a) //
+        .def("SetGraphicsRoot32BitConstants", &ID3D12GraphicsCommandListWrapper::SetGraphicsRoot32BitConstants, "RootParameterIndex"_a, "Num32BitValuesToSet"_a, "SrcData"_a,
+             "DestOffset"_a)                                                                                                                                          //
+        .def("SetGraphicsRootConstantBufferView", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootConstantBufferView, "RootParameterIndex"_a, "BufferLocation"_a)   //
+        .def("SetGraphicsRootShaderResourceView", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootShaderResourceView, "RootParameterIndex"_a, "BufferLocation"_a)   //
+        .def("SetGraphicsRootUnorderedAccessView", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootUnorderedAccessView, "RootParameterIndex"_a, "BufferLocation"_a) //
+        .def("DrawInstanced", &ID3D12GraphicsCommandListWrapper::DrawInstanced, "VertexCountPerInstance"_a, "InstanceCount"_a, "StartVertexLocation"_a,
+             "StartInstanceLocation"_a)                                                            //
+        .def("RSSetViewports", &ID3D12GraphicsCommandListWrapper::RSSetViewports, "Viewports"_a)   //
+        .def("RSSetScissorRects", &ID3D12GraphicsCommandListWrapper::RSSetScissorRects, "Rects"_a) //
+        .def("OMSetRenderTargets", &ID3D12GraphicsCommandListWrapper::OMSetRenderTargets, "RenderTargetDescriptors"_a, "RTSingleHandleToDescriptorRange"_a = FALSE,
+             "DepthStencilDescriptor"_a = std::optional<D3D12_CPU_DESCRIPTOR_HANDLE>{})                                         //
+        .def("ClearRenderTargetView", &ID3D12GraphicsCommandListWrapper::ClearRenderTargetView, "View"_a, "Color"_a, "Rects"_a) //
+        ;
+
+    py::enum_<D3D12_BLEND_OP>(m, "D3D12_BLEND_OP")
+        .value("ADD", D3D12_BLEND_OP_ADD)
+        .value("SUBTRACT", D3D12_BLEND_OP_SUBTRACT)
+        .value("REV_SUBTRACT", D3D12_BLEND_OP_REV_SUBTRACT)
+        .value("MIN", D3D12_BLEND_OP_MIN)
+        .value("MAX", D3D12_BLEND_OP_MAX)
+        .export_values();
+
+    py::enum_<D3D12_LOGIC_OP>(m, "D3D12_LOGIC_OP")
+        .value("CLEAR", D3D12_LOGIC_OP_CLEAR)
+        .value("SET", D3D12_LOGIC_OP_SET)
+        .value("COPY", D3D12_LOGIC_OP_COPY)
+        .value("COPY_INVERTED", D3D12_LOGIC_OP_COPY_INVERTED)
+        .value("NOOP", D3D12_LOGIC_OP_NOOP)
+        .value("INVERT", D3D12_LOGIC_OP_INVERT)
+        .value("AND", D3D12_LOGIC_OP_AND)
+        .value("NAND", D3D12_LOGIC_OP_NAND)
+        .value("OR", D3D12_LOGIC_OP_OR)
+        .value("NOR", D3D12_LOGIC_OP_NOR)
+        .value("XOR", D3D12_LOGIC_OP_XOR)
+        .value("EQUIV", D3D12_LOGIC_OP_EQUIV)
+        .value("AND_REVERSE", D3D12_LOGIC_OP_AND_REVERSE)
+        .value("AND_INVERTED", D3D12_LOGIC_OP_AND_INVERTED)
+        .value("OR_REVERSE", D3D12_LOGIC_OP_OR_REVERSE)
+        .value("OR_INVERTED", D3D12_LOGIC_OP_OR_INVERTED)
+        .export_values();
+
+    py::enum_<D3D12_BLEND>(m, "D3D12_BLEND")
+        .value("ZERO", D3D12_BLEND_ZERO)
+        .value("ONE", D3D12_BLEND_ONE)
+        .value("SRC_COLOR", D3D12_BLEND_SRC_COLOR)
+        .value("INV_SRC_COLOR", D3D12_BLEND_INV_SRC_COLOR)
+        .value("SRC_ALPHA", D3D12_BLEND_SRC_ALPHA)
+        .value("INV_SRC_ALPHA", D3D12_BLEND_INV_SRC_ALPHA)
+        .value("DEST_ALPHA", D3D12_BLEND_DEST_ALPHA)
+        .value("INV_DEST_ALPHA", D3D12_BLEND_INV_DEST_ALPHA)
+        .value("DEST_COLOR", D3D12_BLEND_DEST_COLOR)
+        .value("INV_DEST_COLOR", D3D12_BLEND_INV_DEST_COLOR)
+        .value("SRC_ALPHA_SAT", D3D12_BLEND_SRC_ALPHA_SAT)
+        .value("BLEND_FACTOR", D3D12_BLEND_BLEND_FACTOR)
+        .value("INV_BLEND_FACTOR", D3D12_BLEND_INV_BLEND_FACTOR)
+        .value("SRC1_COLOR", D3D12_BLEND_SRC1_COLOR)
+        .value("INV_SRC1_COLOR", D3D12_BLEND_INV_SRC1_COLOR)
+        .value("SRC1_ALPHA", D3D12_BLEND_SRC1_ALPHA)
+        .value("INV_SRC1_ALPHA", D3D12_BLEND_INV_SRC1_ALPHA)
+        .export_values();
+
+    py::enum_<D3D12_COLOR_WRITE_ENABLE>(m, "D3D12_COLOR_WRITE_ENABLE")
+        .value("RED", D3D12_COLOR_WRITE_ENABLE_RED)
+        .value("GREEN", D3D12_COLOR_WRITE_ENABLE_GREEN)
+        .value("BLUE", D3D12_COLOR_WRITE_ENABLE_BLUE)
+        .value("ALPHA", D3D12_COLOR_WRITE_ENABLE_ALPHA)
+        .value("ALL", D3D12_COLOR_WRITE_ENABLE_ALL)
+        .export_values();
+
+    py::class_<D3D12_RENDER_TARGET_BLEND_DESC>(m, "D3D12_RENDER_TARGET_BLEND_DESC") //
+        .def(py::init())                                                            //
+        .def(py::init([](BOOL BlendEnable, BOOL LogicOpEnable, D3D12_BLEND SrcBlend, D3D12_BLEND DestBlend, D3D12_BLEND_OP BlendOp, D3D12_BLEND SrcBlendAlpha,
+                         D3D12_BLEND DestBlendAlpha, D3D12_BLEND_OP BlendOpAlpha, D3D12_LOGIC_OP LogicOp, UINT8 RenderTargetWriteMask) {
+                 D3D12_RENDER_TARGET_BLEND_DESC desc = {};
+                 desc.BlendEnable                    = BlendEnable;
+                 desc.LogicOpEnable                  = LogicOpEnable;
+                 desc.SrcBlend                       = SrcBlend;
+                 desc.DestBlend                      = DestBlend;
+                 desc.BlendOp                        = BlendOp;
+                 desc.SrcBlendAlpha                  = SrcBlendAlpha;
+                 desc.DestBlendAlpha                 = DestBlendAlpha;
+                 desc.BlendOpAlpha                   = BlendOpAlpha;
+                 desc.LogicOp                        = LogicOp;
+                 desc.RenderTargetWriteMask          = RenderTargetWriteMask;
+                 return desc;
+             }),
+             "BlendEnable"_a = FALSE, "LogicOpEnable"_a = FALSE, "SrcBlend"_a = D3D12_BLEND_ZERO, "DestBlend"_a = D3D12_BLEND_ZERO, "BlendOp"_a = D3D12_BLEND_OP_ADD,
+             "SrcBlendAlpha"_a = D3D12_BLEND_ZERO, "DestBlendAlpha"_a = D3D12_BLEND_ZERO, "BlendOpAlpha"_a = D3D12_BLEND_OP_ADD, "LogicOp"_a = D3D12_LOGIC_OP_NOOP,
+             "RenderTargetWriteMask"_a = D3D12_COLOR_WRITE_ENABLE_ALL) //
+        ;
+
+    py::class_<D3D12_BLEND_DESC>(m, "D3D12_BLEND_DESC") //
+        .def(py::init())                                //
+        .def(py::init([](BOOL AlphaToCoverageEnable, BOOL IndependentBlendEnable, std::vector<D3D12_RENDER_TARGET_BLEND_DESC> RenderTarget) {
+                 D3D12_BLEND_DESC desc       = {};
+                 desc.AlphaToCoverageEnable  = AlphaToCoverageEnable;
+                 desc.IndependentBlendEnable = IndependentBlendEnable;
+                 ASSERT_PANIC(RenderTarget.size() <= D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT &&
+                              "RenderTarget size must be less than or equal to D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT");
+                 for (int i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; i++) {
+                     desc.RenderTarget[i] = RenderTarget[i];
+                 }
+                 return desc;
+             }),
+             "AlphaToCoverageEnable"_a = FALSE, "IndependentBlendEnable"_a = FALSE,
+             "RenderTarget"_a = std::vector<D3D12_RENDER_TARGET_BLEND_DESC>(D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT)) //                                            //
+        ;
+
+    py::class_<D3D12_STREAM_OUTPUT_DESC>(m, "D3D12_STREAM_OUTPUT_DESC") //
+        .def(py::init())                                                //
+        .def(py::init([](std::vector<D3D12_SO_DECLARATION_ENTRY> SODeclaration, std::vector<UINT> BufferStrides, UINT RasterizedStream) {
+                 D3D12_STREAM_OUTPUT_DESC desc = {};
+                 desc.pSODeclaration           = SODeclaration.data();
+                 desc.NumEntries               = (UINT)SODeclaration.size();
+                 desc.pBufferStrides           = BufferStrides.data();
+                 desc.NumStrides               = (UINT)BufferStrides.size();
+                 desc.RasterizedStream         = RasterizedStream;
+                 return desc;
+             }),
+             "SODeclaration"_a = std::vector<D3D12_SO_DECLARATION_ENTRY>{}, "BufferStrides"_a = std::vector<UINT>{},
+             "RasterizedStream"_a =
+                 0) //                                                                                                                                               //
+        ;
+
+    py::enum_<D3D12_DEPTH_WRITE_MASK>(m, "D3D12_DEPTH_WRITE_MASK") //
+        .value("ZERO", D3D12_DEPTH_WRITE_MASK_ZERO)                //
+        .value("ALL", D3D12_DEPTH_WRITE_MASK_ALL)                  //
+        .export_values();
+    py::enum_<D3D12_STENCIL_OP>(m, "D3D12_STENCIL_OP") //
+        .value("KEEP", D3D12_STENCIL_OP_KEEP)          //
+        .value("ZERO", D3D12_STENCIL_OP_ZERO)          //
+        .value("REPLACE", D3D12_STENCIL_OP_REPLACE)    //
+        .value("INCR_SAT", D3D12_STENCIL_OP_INCR_SAT)  //
+        .value("DECR_SAT", D3D12_STENCIL_OP_DECR_SAT)  //
+        .value("INVERT", D3D12_STENCIL_OP_INVERT)      //
+        .value("INCR", D3D12_STENCIL_OP_INCR)          //
+        .value("DECR", D3D12_STENCIL_OP_DECR)          //
+        .export_values();
+
+    py::enum_<D3D12_COMPARISON_FUNC>(m, "D3D12_COMPARISON_FUNC")     //
+        .value("NEVER", D3D12_COMPARISON_FUNC_NEVER)                 //
+        .value("LESS", D3D12_COMPARISON_FUNC_LESS)                   //
+        .value("EQUAL", D3D12_COMPARISON_FUNC_EQUAL)                 //
+        .value("LESS_EQUAL", D3D12_COMPARISON_FUNC_LESS_EQUAL)       //
+        .value("GREATER", D3D12_COMPARISON_FUNC_GREATER)             //
+        .value("NOT_EQUAL", D3D12_COMPARISON_FUNC_NOT_EQUAL)         //
+        .value("GREATER_EQUAL", D3D12_COMPARISON_FUNC_GREATER_EQUAL) //
+        .value("ALWAYS", D3D12_COMPARISON_FUNC_ALWAYS)               //
+        .export_values();
+
+    py::class_<D3D12_DEPTH_STENCILOP_DESC>(m, "D3D12_DEPTH_STENCILOP_DESC") //
+        .def(py::init())                                                    //
+        .def(py::init([](D3D12_STENCIL_OP StencilFailOp, D3D12_STENCIL_OP StencilDepthFailOp, D3D12_STENCIL_OP StencilPassOp, D3D12_COMPARISON_FUNC StencilFunc) {
+                 D3D12_DEPTH_STENCILOP_DESC desc = {};
+                 desc.StencilFailOp              = StencilFailOp;
+                 desc.StencilDepthFailOp         = StencilDepthFailOp;
+                 desc.StencilPassOp              = StencilPassOp;
+                 desc.StencilFunc                = StencilFunc;
+                 return desc;
+             }),
+             "StencilFailOp"_a = D3D12_STENCIL_OP_KEEP, "StencilDepthFailOp"_a = D3D12_STENCIL_OP_KEEP, "StencilPassOp"_a = D3D12_STENCIL_OP_KEEP,
+             "StencilFunc"_a = D3D12_COMPARISON_FUNC_ALWAYS) //
+                                                             //
+        ;
+
+    py::class_<D3D12_DEPTH_STENCIL_DESC>(m, "D3D12_DEPTH_STENCIL_DESC") //
+        .def(py::init())                                                //
+        .def(py::init([](BOOL DepthEnable, D3D12_DEPTH_WRITE_MASK DepthWriteMask, D3D12_COMPARISON_FUNC DepthFunc, BOOL StencilEnable, UINT8 StencilReadMask,
+                         UINT8 StencilWriteMask, D3D12_DEPTH_STENCILOP_DESC FrontFace, D3D12_DEPTH_STENCILOP_DESC BackFace) {
+                 D3D12_DEPTH_STENCIL_DESC desc = {};
+                 desc.DepthEnable              = DepthEnable;
+                 desc.DepthWriteMask           = DepthWriteMask;
+                 desc.DepthFunc                = DepthFunc;
+                 desc.StencilEnable            = StencilEnable;
+                 desc.StencilReadMask          = StencilReadMask;
+                 desc.StencilWriteMask         = StencilWriteMask;
+                 desc.FrontFace                = FrontFace;
+                 desc.BackFace                 = BackFace;
+                 return desc;
+             }),
+             "DepthEnable"_a = FALSE, "DepthWriteMask"_a = D3D12_DEPTH_WRITE_MASK_ALL, "DepthFunc"_a = D3D12_COMPARISON_FUNC_LESS, "StencilEnable"_a = FALSE,
+             "StencilReadMask"_a = D3D12_DEFAULT_STENCIL_READ_MASK, "StencilWriteMask"_a = D3D12_DEFAULT_STENCIL_WRITE_MASK, "FrontFace"_a = D3D12_DEPTH_STENCILOP_DESC{},
+             "BackFace"_a = D3D12_DEPTH_STENCILOP_DESC{}) //
+        ;
+
+    py::enum_<D3D12_CONSERVATIVE_RASTERIZATION_MODE>(m, "D3D12_CONSERVATIVE_RASTERIZATION_MODE") //
+        .value("OFF", D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF)                                 //
+        .value("ON", D3D12_CONSERVATIVE_RASTERIZATION_MODE_ON)                                   //
+        .export_values();
+    py::enum_<D3D12_CULL_MODE>(m, "D3D12_CULL_MODE") //
+        .value("NONE", D3D12_CULL_MODE_NONE)         //
+        .value("FRONT", D3D12_CULL_MODE_FRONT)       //
+        .value("BACK", D3D12_CULL_MODE_BACK)         //
+        .export_values();
+    py::enum_<D3D12_FILL_MODE>(m, "D3D12_FILL_MODE")   //
+        .value("WIREFRAME", D3D12_FILL_MODE_WIREFRAME) //
+        .value("SOLID", D3D12_FILL_MODE_SOLID)         //
+        .export_values();
+    py::class_<D3D12_RASTERIZER_DESC>(m, "D3D12_RASTERIZER_DESC") //
+        .def(py::init())                                          //
+        .def(py::init([](D3D12_FILL_MODE FillMode, D3D12_CULL_MODE CullMode, BOOL FrontCounterClockwise, INT DepthBias, FLOAT DepthBiasClamp, FLOAT SlopeScaledDepthBias,
+                         BOOL DepthClipEnable, BOOL MultisampleEnable, BOOL AntialiasedLineEnable, UINT ForcedSampleCount,
+                         D3D12_CONSERVATIVE_RASTERIZATION_MODE ConservativeRaster) {
+                 D3D12_RASTERIZER_DESC desc = {};
+                 desc.FillMode              = FillMode;
+                 desc.CullMode              = CullMode;
+                 desc.FrontCounterClockwise = FrontCounterClockwise;
+                 desc.DepthBias             = DepthBias;
+                 desc.DepthBiasClamp        = DepthBiasClamp;
+                 desc.SlopeScaledDepthBias  = SlopeScaledDepthBias;
+                 desc.DepthClipEnable       = DepthClipEnable;
+                 desc.MultisampleEnable     = MultisampleEnable;
+                 desc.AntialiasedLineEnable = AntialiasedLineEnable;
+                 desc.ForcedSampleCount     = ForcedSampleCount;
+                 desc.ConservativeRaster    = ConservativeRaster;
+                 return desc;
+             }),
+             "FillMode"_a = D3D12_FILL_MODE_SOLID, "CullMode"_a = D3D12_CULL_MODE_BACK, "FrontCounterClockwise"_a = FALSE, "DepthBias"_a = D3D12_DEFAULT_DEPTH_BIAS,
+             "DepthBiasClamp"_a = D3D12_DEFAULT_DEPTH_BIAS_CLAMP, "SlopeScaledDepthBias"_a = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS, "DepthClipEnable"_a = TRUE,
+             "MultisampleEnable"_a = FALSE, "AntialiasedLineEnable"_a = FALSE, "ForcedSampleCount"_a = 0, "ConservativeRaster"_a = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF) //
+        ;
+
+    py::enum_<D3D12_INPUT_CLASSIFICATION>(m, "D3D12_INPUT_CLASSIFICATION")        //
+        .value("PER_VERTEX_DATA", D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA)     //
+        .value("PER_INSTANCE_DATA", D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA) //
+        .export_values();
+    py::class_<D3D12_INPUT_ELEMENT_DESC_Wrapper, std::shared_ptr<D3D12_INPUT_ELEMENT_DESC_Wrapper>>(m, "D3D12_INPUT_ELEMENT_DESC") //
+        .def(py::init())                                                                                                           //
+        .def(py::init([](std::string SemanticName, UINT SemanticIndex, DXGI_FORMAT Format, UINT InputSlot, UINT AlignedByteOffset, D3D12_INPUT_CLASSIFICATION InputSlotClass,
+                         UINT InstanceDataStepRate) {
+                 return D3D12_INPUT_ELEMENT_DESC_Wrapper(SemanticName, SemanticIndex, Format, InputSlot, AlignedByteOffset, InputSlotClass, InstanceDataStepRate);
+             }),
+             "SemanticName"_a = "", "SemanticIndex"_a = 0, "Format"_a = DXGI_FORMAT_UNKNOWN, "InputSlot"_a = 0, "AlignedByteOffset"_a = D3D12_APPEND_ALIGNED_ELEMENT,
+             "InputSlotClass"_a = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, "InstanceDataStepRate"_a = 0) //
+        ;
+    py::enum_<D3D12_PRIMITIVE_TOPOLOGY>(m, "D3D12_PRIMITIVE_TOPOLOGY") //
+        .value("UNDEFINED", D3D_PRIMITIVE_TOPOLOGY_UNDEFINED)           //
+        .value("POINTLIST", D3D_PRIMITIVE_TOPOLOGY_POINTLIST)           //
+        .value("LINELIST", D3D_PRIMITIVE_TOPOLOGY_LINELIST)             //
+        .value("LINESTRIP", D3D_PRIMITIVE_TOPOLOGY_LINESTRIP)           //
+        .value("TRIANGLELIST", D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST)     //
+        .value("TRIANGLESTRIP", D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP)   //
+        .export_values();
+    py::enum_<D3D12_PRIMITIVE_TOPOLOGY_TYPE>(m, "D3D12_PRIMITIVE_TOPOLOGY_TYPE") //
+        .value("UNDEFINED", D3D12_PRIMITIVE_TOPOLOGY_TYPE_UNDEFINED)             //
+        .value("POINT", D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT)                     //
+        .value("LINE", D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE)                       //
+        .value("TRIANGLE", D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE)               //
+        .value("PATCH", D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH)                     //
+        .export_values();
+    py::enum_<D3D12_INDEX_BUFFER_STRIP_CUT_VALUE>(m, "D3D12_INDEX_BUFFER_STRIP_CUT_VALUE") //
+        .value("DISABLED", D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED)                    //
+        .value("FFFF", D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF)                          //
+        .value("FFFFFFFF", D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF)                  //
+        .export_values();
+
+    py::class_<D3D12_GRAPHICS_PIPELINE_STATE_DESC_Wrapper, std::shared_ptr<D3D12_GRAPHICS_PIPELINE_STATE_DESC_Wrapper>>(m, "D3D12_GRAPHICS_PIPELINE_STATE_DESC")
+        .def(py::init([](std::shared_ptr<ID3D12RootSignatureWrapper>                    pRootSignature,        //
+                         std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 VS,                    //
+                         std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 PS,                    //
+                         std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 DS,                    //
+                         std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 HS,                    //
+                         std::shared_ptr<D3D12_SHADER_BYTECODE_Wrapper>                 GS,                    //
+                         std::optional<D3D12_STREAM_OUTPUT_DESC>                        StreamOutput,          //
+                         D3D12_BLEND_DESC                                               BlendState,            //
+                         UINT                                                           SampleMask,            //
+                         D3D12_RASTERIZER_DESC                                          RasterizerState,       //
+                         D3D12_DEPTH_STENCIL_DESC                                       DepthStencilState,     //
+                         std::vector<std::shared_ptr<D3D12_INPUT_ELEMENT_DESC_Wrapper>> InputLayouts,          //
+                         D3D12_INDEX_BUFFER_STRIP_CUT_VALUE                             IBStripCutValue,       //
+                         D3D12_PRIMITIVE_TOPOLOGY_TYPE                                  PrimitiveTopologyType, //
+                         std::vector<DXGI_FORMAT>                                       RTVFormats,            //
+                         DXGI_FORMAT                                                    DSVFormat,             //
+                         DXGI_SAMPLE_DESC                                               SampleDesc,            //
+                         UINT                                                           NodeMask,              //
+                         std::optional<D3D12_CACHED_PIPELINE_STATE>                     CachedPSO,             //
+                         D3D12_PIPELINE_STATE_FLAGS                                     Flags) {                                                   //
+                 UINT NumRenderTargets = (UINT)RTVFormats.size();
+                 ASSERT_PANIC(NumRenderTargets <= D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT &&
+                              "NumRenderTargets must be less than or equal to D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT");
+                 return D3D12_GRAPHICS_PIPELINE_STATE_DESC_Wrapper(pRootSignature, VS, PS, DS, HS, GS, StreamOutput ? *StreamOutput : D3D12_STREAM_OUTPUT_DESC{}, BlendState,
+                                                                   SampleMask, RasterizerState, DepthStencilState, InputLayouts, IBStripCutValue, PrimitiveTopologyType,
+                                                                   NumRenderTargets, RTVFormats, DSVFormat, SampleDesc, NodeMask, CachedPSO, Flags);
+
+             }), //
+             "RootSignature"_a = nullptr, "VS"_a = nullptr, "PS"_a = nullptr, "DS"_a = nullptr, "HS"_a = nullptr, "GS"_a = nullptr,
+             "StreamOutput"_a = std::optional<D3D12_STREAM_OUTPUT_DESC>{}, "BlendState"_a = D3D12_BLEND_DESC{}, "SampleMask"_a = 1, "RasterizerState"_a = D3D12_RASTERIZER_DESC{},
+             "DepthStencilState"_a = D3D12_DEPTH_STENCIL_DESC{}, "InputLayouts"_a = std::vector<std::shared_ptr<D3D12_INPUT_ELEMENT_DESC_Wrapper>>{},
+             "IBStripCutValue"_a = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE{}, "PrimitiveTopologyType"_a = D3D12_PRIMITIVE_TOPOLOGY_TYPE{}, "RTVFormats"_a = std::array<DXGI_FORMAT, 8>{},
+             "DSVFormat"_a = DXGI_FORMAT_UNKNOWN, "SampleDesc"_a = DXGI_SAMPLE_DESC{}, "NodeMask"_a = 0, "CachedPSO"_a = std::optional<D3D12_CACHED_PIPELINE_STATE>{},
+             "Flags"_a = D3D12_PIPELINE_STATE_FLAG_NONE) //
+        ;
+
+    py::enum_<D3D12_DESCRIPTOR_HEAP_TYPE>(m, "D3D12_DESCRIPTOR_HEAP_TYPE") //
+        .value("CBV_SRV_UAV", D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)      //
+        .value("SAMPLER", D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)              //
+        .value("RTV", D3D12_DESCRIPTOR_HEAP_TYPE_RTV)                      //
+        .value("DSV", D3D12_DESCRIPTOR_HEAP_TYPE_DSV)                      //
+        .export_values();
+
+    py::enum_<D3D12_DESCRIPTOR_HEAP_FLAGS>(m, "D3D12_DESCRIPTOR_HEAP_FLAGS") //
+        .value("NONE", D3D12_DESCRIPTOR_HEAP_FLAG_NONE)                      //
+        .value("SHADER_VISIBLE", D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)  //
+        .export_values();
+
+    py::class_<D3D12_DESCRIPTOR_HEAP_DESC>(m, "D3D12_DESCRIPTOR_HEAP_DESC") //
+        .def(py::init())                                                    //
+        .def(py::init([](D3D12_DESCRIPTOR_HEAP_TYPE Type, UINT NumDescriptors, D3D12_DESCRIPTOR_HEAP_FLAGS Flags, UINT NodeMask) {
+                 D3D12_DESCRIPTOR_HEAP_DESC desc = {};
+                 desc.Type                       = Type;
+                 desc.NumDescriptors             = NumDescriptors;
+                 desc.Flags                      = Flags;
+                 desc.NodeMask                   = NodeMask;
+                 return desc;
+             }),
+             "Type"_a = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, "NumDescriptors"_a = 1, "Flags"_a = D3D12_DESCRIPTOR_HEAP_FLAG_NONE, "NodeMask"_a = 0) //
+        ;
+
+    // export D3D12_TEX1D_RTV
+    py::class_<D3D12_TEX1D_RTV>(m, "D3D12_TEX1D_RTV") //
+        .def(py::init())                              //
+        .def(py::init([](UINT MipSlice) {
+                 D3D12_TEX1D_RTV desc = {};
+                 desc.MipSlice        = MipSlice;
+                 return desc;
+             }),
+             "MipSlice"_a = 0)                                 //
+        .def_readwrite("MipSlice", &D3D12_TEX1D_RTV::MipSlice) //
+        ;
+
+    // export D3D12_TEX1D_ARRAY_RTV
+    py::class_<D3D12_TEX1D_ARRAY_RTV>(m, "D3D12_TEX1D_ARRAY_RTV") //
+        .def(py::init())                                          //
+        .def(py::init([](UINT MipSlice, UINT FirstArraySlice, UINT ArraySize) {
+                 D3D12_TEX1D_ARRAY_RTV desc = {};
+                 desc.MipSlice              = MipSlice;
+                 desc.FirstArraySlice       = FirstArraySlice;
+                 desc.ArraySize             = ArraySize;
+                 return desc;
+             }),
+             "MipSlice"_a = 0, "FirstArraySlice"_a = 0, "ArraySize"_a = 1)         //
+        .def_readwrite("MipSlice", &D3D12_TEX1D_ARRAY_RTV::MipSlice)               //
+        .def_readwrite("FirstArraySlice", &D3D12_TEX1D_ARRAY_RTV::FirstArraySlice) //
+        .def_readwrite("ArraySize", &D3D12_TEX1D_ARRAY_RTV::ArraySize)             //
+        ;
+
+    // export D3D12_TEX2D_RTV
+    py::class_<D3D12_TEX2D_RTV>(m, "D3D12_TEX2D_RTV") //
+        .def(py::init())                              //
+        .def(py::init([](UINT MipSlice, UINT PlaneSlice) {
+                 D3D12_TEX2D_RTV desc = {};
+                 desc.MipSlice        = MipSlice;
+                 desc.PlaneSlice      = PlaneSlice;
+                 return desc;
+             }),
+             "MipSlice"_a = 0, "PlaneSlice"_a = 0)                 //
+        .def_readwrite("MipSlice", &D3D12_TEX2D_RTV::MipSlice)     //
+        .def_readwrite("PlaneSlice", &D3D12_TEX2D_RTV::PlaneSlice) //
+        ;
+
+    // export D3D12_TEX2D_ARRAY_RTV
+    py::class_<D3D12_TEX2D_ARRAY_RTV>(m, "D3D12_TEX2D_ARRAY_RTV") //
+        .def(py::init())                                          //
+        .def(py::init([](UINT MipSlice, UINT FirstArraySlice, UINT ArraySize, UINT PlaneSlice) {
+                 D3D12_TEX2D_ARRAY_RTV desc = {};
+                 desc.MipSlice              = MipSlice;
+                 desc.FirstArraySlice       = FirstArraySlice;
+                 desc.ArraySize             = ArraySize;
+                 desc.PlaneSlice            = PlaneSlice;
+                 return desc;
+             }),
+             "MipSlice"_a = 0, "FirstArraySlice"_a = 0, "ArraySize"_a = 1, "PlaneSlice"_a = 0) //
+        .def_readwrite("MipSlice", &D3D12_TEX2D_ARRAY_RTV::MipSlice)                           //
+        .def_readwrite("FirstArraySlice", &D3D12_TEX2D_ARRAY_RTV::FirstArraySlice)             //
+        .def_readwrite("ArraySize", &D3D12_TEX2D_ARRAY_RTV::ArraySize)                         //
+        .def_readwrite("PlaneSlice", &D3D12_TEX2D_ARRAY_RTV::PlaneSlice)                       //
+        ;
+
+    // export D3D12_TEX2DMS_RTV
+    py::class_<D3D12_TEX2DMS_RTV>(m, "D3D12_TEX2DMS_RTV") //
+        .def(py::init())                                  //
+        .def(py::init([](UINT UnusedField_NothingToDefine) {
+                 D3D12_TEX2DMS_RTV desc           = {};
+                 desc.UnusedField_NothingToDefine = UnusedField_NothingToDefine;
+                 return desc;
+             }),
+             "UnusedField_NothingToDefine"_a = 0)                                                      //
+        .def_readwrite("UnusedField_NothingToDefine", &D3D12_TEX2DMS_RTV::UnusedField_NothingToDefine) //
+        ;
+
+    // export D3D12_TEX2DMS_ARRAY_RTV
+    py::class_<D3D12_TEX2DMS_ARRAY_RTV>(m, "D3D12_TEX2DMS_ARRAY_RTV") //
+        .def(py::init())                                              //
+        .def(py::init([](UINT FirstArraySlice, UINT ArraySize) {
+                 D3D12_TEX2DMS_ARRAY_RTV desc = {};
+                 desc.FirstArraySlice         = FirstArraySlice;
+                 desc.ArraySize               = ArraySize;
+                 return desc;
+             }),
+             "FirstArraySlice"_a = 0, "ArraySize"_a = 1)                             //
+        .def_readwrite("FirstArraySlice", &D3D12_TEX2DMS_ARRAY_RTV::FirstArraySlice) //
+        .def_readwrite("ArraySize", &D3D12_TEX2DMS_ARRAY_RTV::ArraySize)             //
+        ;
+
+    // export D3D12_TEX3D_RTV
+    py::class_<D3D12_TEX3D_RTV>(m, "D3D12_TEX3D_RTV") //
+        .def(py::init())                              //
+        .def(py::init([](UINT MipSlice, UINT FirstWSlice, UINT WSize) {
+                 D3D12_TEX3D_RTV desc = {};
+                 desc.MipSlice        = MipSlice;
+                 desc.FirstWSlice     = FirstWSlice;
+                 desc.WSize           = WSize;
+                 return desc;
+             }),
+             "MipSlice"_a = 0, "FirstWSlice"_a = 0, "WSize"_a = 1)   //
+        .def_readwrite("MipSlice", &D3D12_TEX3D_RTV::MipSlice)       //
+        .def_readwrite("FirstWSlice", &D3D12_TEX3D_RTV::FirstWSlice) //
+        .def_readwrite("WSize", &D3D12_TEX3D_RTV::WSize)             //
+        ;
+
+    // export D3D12_BUFFER_RTV
+    py::class_<D3D12_BUFFER_RTV>(m, "D3D12_BUFFER_RTV") //
+        .def(py::init())                                //
+        .def(py::init([](UINT64 FirstElement, UINT NumElements) {
+                 D3D12_BUFFER_RTV desc = {};
+                 desc.FirstElement     = FirstElement;
+                 desc.NumElements      = NumElements;
+                 return desc;
+             }),
+             "FirstElement"_a = 0, "NumElements"_a = 1)                 //
+        .def_readwrite("FirstElement", &D3D12_BUFFER_RTV::FirstElement) //
+        .def_readwrite("NumElements", &D3D12_BUFFER_RTV::NumElements)   //
+        ;
+
+    py::enum_<D3D12_RTV_DIMENSION>(m, "D3D12_RTV_DIMENSION")             //
+        .value("UNKNOWN", D3D12_RTV_DIMENSION_UNKNOWN)                   //
+        .value("BUFFER", D3D12_RTV_DIMENSION_BUFFER)                     //
+        .value("TEXTURE1D", D3D12_RTV_DIMENSION_TEXTURE1D)               //
+        .value("TEXTURE1DARRAY", D3D12_RTV_DIMENSION_TEXTURE1DARRAY)     //
+        .value("TEXTURE2D", D3D12_RTV_DIMENSION_TEXTURE2D)               //
+        .value("TEXTURE2DARRAY", D3D12_RTV_DIMENSION_TEXTURE2DARRAY)     //
+        .value("TEXTURE2DMS", D3D12_RTV_DIMENSION_TEXTURE2DMS)           //
+        .value("TEXTURE2DMSARRAY", D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY) //
+        .value("TEXTURE3D", D3D12_RTV_DIMENSION_TEXTURE3D)               //
+        .export_values();
+
+    py::class_<D3D12_RENDER_TARGET_VIEW_DESC>(m, "D3D12_RENDER_TARGET_VIEW_DESC") //
+
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX1D_RTV Texture1D) {
+                 D3D12_RENDER_TARGET_VIEW_DESC desc = {};
+                 desc.Format                        = Format;
+                 desc.ViewDimension                 = D3D12_RTV_DIMENSION_TEXTURE1D;
+                 desc.Texture1D                     = Texture1D;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture1D"_a = D3D12_TEX1D_RTV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX1D_ARRAY_RTV Texture1DArray) {
+                 D3D12_RENDER_TARGET_VIEW_DESC desc = {};
+                 desc.Format                        = Format;
+                 desc.ViewDimension                 = D3D12_RTV_DIMENSION_TEXTURE1DARRAY;
+                 desc.Texture1DArray                = Texture1DArray;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture1DArray"_a = D3D12_TEX1D_ARRAY_RTV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX2D_RTV Texture2D) {
+                 D3D12_RENDER_TARGET_VIEW_DESC desc = {};
+                 desc.Format                        = Format;
+                 desc.ViewDimension                 = D3D12_RTV_DIMENSION_TEXTURE2D;
+                 desc.Texture2D                     = Texture2D;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture2D"_a = D3D12_TEX2D_RTV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX2D_ARRAY_RTV Texture2DArray) {
+                 D3D12_RENDER_TARGET_VIEW_DESC desc = {};
+                 desc.Format                        = Format;
+                 desc.ViewDimension                 = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+                 desc.Texture2DArray                = Texture2DArray;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture2DArray"_a = D3D12_TEX2D_ARRAY_RTV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX2DMS_RTV Texture2DMS) {
+                 D3D12_RENDER_TARGET_VIEW_DESC desc = {};
+                 desc.Format                        = Format;
+                 desc.ViewDimension                 = D3D12_RTV_DIMENSION_TEXTURE2DMS;
+                 desc.Texture2DMS                   = Texture2DMS;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture2DMS"_a = D3D12_TEX2DMS_RTV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX2DMS_ARRAY_RTV Texture2DMSArray) {
+                 D3D12_RENDER_TARGET_VIEW_DESC desc = {};
+                 desc.Format                        = Format;
+                 desc.ViewDimension                 = D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY;
+                 desc.Texture2DMSArray              = Texture2DMSArray;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture2DMSArray"_a = D3D12_TEX2DMS_ARRAY_RTV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX3D_RTV Texture3D) {
+                 D3D12_RENDER_TARGET_VIEW_DESC desc = {};
+                 desc.Format                        = Format;
+                 desc.ViewDimension                 = D3D12_RTV_DIMENSION_TEXTURE3D;
+                 desc.Texture3D                     = Texture3D;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture3D"_a = D3D12_TEX3D_RTV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_BUFFER_RTV Buffer) {
+                 D3D12_RENDER_TARGET_VIEW_DESC desc = {};
+                 desc.Format                        = Format;
+                 desc.ViewDimension                 = D3D12_RTV_DIMENSION_BUFFER;
+                 desc.Buffer                        = Buffer;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Buffer"_a = D3D12_BUFFER_RTV{}) //
+        ;
+
+    py::class_<D3D12_GPU_DESCRIPTOR_HANDLE>(m, "D3D12_GPU_DESCRIPTOR_HANDLE")                        //
+        .def(py::init())                                                                             //
+        .def(py::init([](uint64_t handle) { return D3D12_GPU_DESCRIPTOR_HANDLE{handle}; }), "ptr"_a) //
+        .def_readwrite("ptr", &D3D12_GPU_DESCRIPTOR_HANDLE::ptr)                                     //
+        ;
+    py::class_<D3D12_CPU_DESCRIPTOR_HANDLE>(m, "D3D12_CPU_DESCRIPTOR_HANDLE")                        //
+        .def(py::init())                                                                             //
+        .def(py::init([](uint64_t handle) { return D3D12_CPU_DESCRIPTOR_HANDLE{handle}; }), "ptr"_a) //
+        .def_readwrite("ptr", &D3D12_CPU_DESCRIPTOR_HANDLE::ptr)                                     //
+        ;
+
+    py::class_<ID3D12DescriptorHeapWrapper, std::shared_ptr<ID3D12DescriptorHeapWrapper>>(m, "ID3D12DescriptorHeap") //
+        .def(py::init<ID3D12DescriptorHeap *>())                                                                     //
+        .def("GetCPUDescriptorHandleForHeapStart", &ID3D12DescriptorHeapWrapper::GetCPUDescriptorHandleForHeapStart) //
+        .def("GetGPUDescriptorHandleForHeapStart", &ID3D12DescriptorHeapWrapper::GetGPUDescriptorHandleForHeapStart) //                                                    //
         ;
 
     py::class_<ID3D12DeviceWrapper, std::shared_ptr<ID3D12DeviceWrapper>>(m, "ID3D12Device")                                                                //
@@ -1484,13 +2304,14 @@ PYBIND11_MODULE(native, m) {
         .def("CreateConstantBufferView", &ID3D12DeviceWrapper::CreateConstantBufferView, "Desc"_a, "DestDescriptor"_a)                                      //
         .def("CreateUnorderedAccessView", &ID3D12DeviceWrapper::CreateUnorderedAccessView, "Resource"_a, "CounterResource"_a, "Desc"_a, "DestDescriptor"_a) //
         .def("CreateSampler", &ID3D12DeviceWrapper::CreateSampler, "Desc"_a, "DestDescriptor"_a)                                                            //
+        .def("GetDescriptorHandleIncrementSize", &ID3D12DeviceWrapper::GetDescriptorHandleIncrementSize, "Type"_a)                                          //
         ;
 
     m.def("CreateDevice", &CreateDevice);
 
-    py::class_<ID3D12DebugWrapper, std::shared_ptr<ID3D12DebugWrapper>>(m, "ID3D12Debug") //
-        .def(py::init())                                                                 //
-        .def("EnableDebugLayer", &ID3D12DebugWrapper::EnableDebugLayer)                   //
+    py::class_<ID3D12DebugWrapper, std::shared_ptr<ID3D12DebugWrapper>>(m, "ID3D12Debug")     //
+        .def(py::init())                                                                      //
+        .def("EnableDebugLayer", &ID3D12DebugWrapper::EnableDebugLayer)                       //
         .def("SetEnableGPUBasedValidation", &ID3D12DebugWrapper::SetEnableGPUBasedValidation) //
         ;
 }

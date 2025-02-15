@@ -129,6 +129,8 @@ pso = device.CreateComputePipelineState(pso_desc)
 
 assert pso is not None
 
+print(pso.GetISA())
+
 print(CONSOLE_COLOR_GREEN, "Compute PSO Test: SUCCESS", CONSOLE_COLOR_END)
 
 cmd_queue = device.CreateCommandQueue(native.D3D12_COMMAND_QUEUE_DESC(

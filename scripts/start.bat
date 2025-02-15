@@ -51,6 +51,7 @@ if not exist bin\dxc_2024_07_31 (
 
 @REM ---------------------------------------
 uv pip install psutil setuptools wheel scikit-build scikit-build-core pybind11 cmake
+uv pip install PyQt5
 @REM ---------------------------------------
 
 powershell
