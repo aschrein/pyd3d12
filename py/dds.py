@@ -24,13 +24,14 @@
 This file describes dds header format and some utilities to manipulate data in dds files, save, load, etc.
 """
 
-from enum import Enum
+from enum import Enum, IntEnum
 from struct import *
 import ctypes
+import struct
 import numpy as np
 
 # https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format
-class DXGI_FORMAT(Enum):
+class DXGI_FORMAT(IntEnum):
     UNKNOWN = 0,
     R32G32B32A32_TYPELESS = 1,
     R32G32B32A32_FLOAT = 2,
@@ -155,6 +156,9 @@ class DXGI_FORMAT(Enum):
 
 # https://github.com/Microsoft/DirectXTex/blob/main/DirectXTex/DDS.h
 
+def int_to_fourcc(val: int) -> str:
+    return struct.pack("<I", val).decode("ascii")
+
 DDS_MAGIC = 0x20534444 # "DDS "
 class PIXELFORMAT(ctypes.Structure):
     _fields_ = [
@@ -167,6 +171,18 @@ class PIXELFORMAT(ctypes.Structure):
         ("BBitMask", ctypes.c_uint32),
         ("ABitMask", ctypes.c_uint32)
     ]
+
+    def Print(self):
+        print(f"Size: {self.size}")
+        print(f"Flags: {self.flags}")
+
+        print(f"FourCC: {int_to_fourcc(self.fourCC)}")
+
+        print(f"RGBBitCount: {self.RGBBitCount}")
+        print(f"RBitMask: {self.RBitMask}")
+        print(f"GBitMask: {self.GBitMask}")
+        print(f"BBitMask: {self.BBitMask}")
+        print(f"ABitMask: {self.ABitMask}")
 
 def MAKE_FOURCC(a, b, c, d):
     return (ord(a) | (ord(b) << 8) | (ord(c) << 16) | (ord(d) << 24))
@@ -207,6 +223,21 @@ class DDS_HEADER(ctypes.Structure):
         ("reserved2", ctypes.c_uint32)
     ]
 
+    def Print(self):
+        print(f"Size: {self.size}")
+        print(f"Flags: {self.flags}")
+        print(f"Height: {self.height}")
+        print(f"Width: {self.width}")
+        print(f"PitchOrLinearSize: {self.pitchOrLinearSize}")
+        print(f"Depth: {self.depth}")
+        print(f"MipMapCount: {self.mipMapCount}")
+        print(f"reserved1: {self.reserved1}")
+        self.ddspf.Print()
+        print(f"Caps: {self.caps}")
+        print(f"Caps2: {self.caps2}")
+        print(f"Caps3: {self.caps3}")
+        print(f"Caps4: {self.caps4}")
+
 class DDS_HEADER_DXT10(ctypes.Structure):
     _fields_ = [
         ("dxgiFormat", ctypes.c_uint32),
@@ -215,6 +246,13 @@ class DDS_HEADER_DXT10(ctypes.Structure):
         ("arraySize", ctypes.c_uint32),
         ("miscFlags2", ctypes.c_uint32)
     ]
+
+    def Print(self):
+        print(f"dxgiFormat: {DXGI_FORMAT(self.dxgiFormat).name}")
+        print(f"resourceDimension: {self.resourceDimension}")
+        print(f"miscFlag: {self.miscFlag}")
+        print(f"arraySize: {self.arraySize}")
+        print(f"miscFlags2: {self.miscFlags2}")
 
 assert ctypes.sizeof(PIXELFORMAT) == 32, "DDS pixel format size mismatch"
 assert ctypes.sizeof(DDS_HEADER) == 124, "DDS Header size mismatch"
@@ -236,21 +274,34 @@ class BufferWrapper:
         data = self.buffer[self.offset:self.offset+size]
         self.offset += size
         return data
+
+    def read_ctype(self, ctype):
+        obj = ctype()
+        ctypes.memmove(ctypes.addressof(obj), self.ptr, ctypes.sizeof(ctype))
+        self.offset += ctypes.sizeof(ctype)
+        return obj
+
+class DDSTexture:
     
-    def write(self, offset, data):
-        if isinstance(data, bytes):
-            # get raw memorry pointer of the data
-            src_ptr = ctypes.cast(data, ctypes.c_void_p).value
-            ctypes.memmove(self.ptr + self.offset + offset, src_ptr, len(data))
-        elif isinstance(data, np.ndarray):
-            # get raw memorry pointer of the data
-            src_ptr = data.ctypes.data
-            ctypes.memmove(self.ptr + offset, src_ptr, data.nbytes)
-        # handle array
-        elif isinstance(data, list):
-            # conert to numpy array
-            data = np.array(data)
-            src_ptr = data.ctypes.data
-            ctypes.memmove(self.ptr + offset, src_ptr, data.nbytes)
-        else:
-            assert False, f"Unsupported data type {type(data)}"
+    def __init__(self, path=None):
+        if path is not None:
+            with open(path, "rb") as f:
+                self.buffer = np.frombuffer(f.read(), dtype=np.uint8)
+
+        self.buf_ref        = BufferWrapper(self.buffer, 0, len(self.buffer))
+        first_dword         = self.buf_ref.read(4)
+        # print("--- ", self.buf_ref.offset)
+        # print(int_to_fourcc(unpack("I", first_dword)[0]))
+        assert unpack("I", first_dword)[0] == DDS_MAGIC, "Invalid DDS file"
+        self.header         = self.buf_ref.read_ctype(DDS_HEADER)
+        # print("--- ", self.buf_ref.offset)
+        self.header.Print()
+        assert self.header.size == 124, "Only DDS_HEADER size 124 is supported"
+        assert self.header.ddspf.size == 32, "Only DDS_PIXELFORMAT size 32 is supported"
+
+        # assert self.header.ddspf.fourCC == MAKE_FOURCC('D', 'X', '1', '0'), "Only dx10 headers are supported"
+
+        self.dx10_header = self.buf_ref.read_ctype(DDS_HEADER_DXT10)
+        # print("--- ", self.buf_ref.offset)
+
+        self.dx10_header.Print()

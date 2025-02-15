@@ -119,6 +119,15 @@ class ImGuiContext:
             #define ROOT_SIGNATURE_MACRO \
             "RootConstants(b0, num32BitConstants = 32), " \
             "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), " \
+            "StaticSampler(s0, " \
+                "Filter = FILTER_MIN_MAG_MIP_LINEAR, " \
+                "AddressU = TEXTURE_ADDRESS_CLAMP, " \
+                "AddressV = TEXTURE_ADDRESS_CLAMP, " \
+                "AddressW = TEXTURE_ADDRESS_CLAMP), " \
+            "DescriptorTable("                                          \
+            "SRV(t0, numDescriptors=1, flags = DESCRIPTORS_VOLATILE)" \
+            ")" \
+
 
             struct VSInput {
                 float2 position : POSITION;
@@ -137,6 +146,8 @@ class ImGuiContext:
             };
 
             ConstantBuffer<RootConstants> pc : register(b0);
+            SamplerState s0 : register(s0);
+            Texture2D t0 : register(t0);
 
             [RootSignature(ROOT_SIGNATURE_MACRO)]
             PSInput VSMain(VSInput input) {
@@ -314,9 +325,9 @@ class ImGuiContext:
                 cmd_list.IASetPrimitiveTopology(native.D3D12_PRIMITIVE_TOPOLOGY.TRIANGLELIST)
                 pc = RootConstants()
                 pc.scale[0] = 2.0 / draw_list.DisplaySize.x
-                pc.scale[1] = 2.0 / draw_list.DisplaySize.y
-                pc.translate[0] = -1.0
-                pc.translate[1] = -1.0
+                pc.scale[1] = -2.0 / draw_list.DisplaySize.y
+                pc.translate[0] = -1.0 - draw_list.DisplayPos.x * pc.scale[0]
+                pc.translate[1] = 1.0 - draw_list.DisplayPos.y * pc.scale[1]
                 cmd_list.SetGraphicsRoot32BitConstants(
                     RootParameterIndex = 0,
                     Num32BitValuesToSet = 4,
