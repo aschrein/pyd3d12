@@ -28,6 +28,15 @@ CONSOLE_COLOR_RED = "\033[91m"
 CONSOLE_COLOR_GREEN = "\033[92m"
 CONSOLE_COLOR_END = "\033[0m"
 
+def quote_path(path):
+    if isinstance(path, Path):
+        path = "\"" + str(path) + "\""
+        return path
+    if isinstance(path, str):
+        path = Path(path)
+        path = "\"" + str(path) + "\""
+    return path
+
 def find_file_or_folder(file_name, folder=None):
     """
         Return the path of the first folder containing the file_name, including the file_name
@@ -44,6 +53,18 @@ def find_file_or_folder(file_name, folder=None):
         folder = folder.parent
     
     return None
+
+def get_third_party_folder():
+    return find_file_or_folder("third_party")
+
+def get_bin_folder():
+    return find_file_or_folder("bin")
+
+def get_or_create_tmp_folder():
+    bin_folder = get_bin_folder()
+    temp_folder = bin_folder.parent / ".tmp"
+    os.makedirs(temp_folder, exist_ok=True)
+    return temp_folder
 
 def find_native_module_path(name):
     """

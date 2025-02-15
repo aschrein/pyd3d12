@@ -22,6 +22,7 @@
 
 import os, sys
 from py.utils import *
+from py.dxc import *
 import ctypes
 
 native = find_native_module("native")
@@ -79,5 +80,47 @@ mapped_ptr = buffer.Map()
 array = (ctypes.c_float * 1024).from_address(mapped_ptr)
 for i in range(1024):
     assert array[i] == i
+
+
+print(CONSOLE_COLOR_GREEN, "Buffer Creation Test: SUCCESS", CONSOLE_COLOR_END)
+
+dxc_ctx = DXCContext()
+bytecode = dxc_ctx.compile_to_dxil(
+    source = """
+//js
+#define ROOT_SIGNATURE_MACRO \
+"UAV(u0, visibility = SHADER_VISIBILITY_ALL)," \
+
+[RootSignature(ROOT_SIGNATURE_MACRO)]
+[numthreads(32, 1, 1)]
+void main(uint3 DTid : SV_DispatchThreadID)
+{
+
+}
+
+//!js
+""",
+    args = "-E main -T cs_6_5",
+)
+assert bytecode is not None
+
+print(CONSOLE_COLOR_GREEN, "DXC Test: SUCCESS", CONSOLE_COLOR_END)
+
+signature = device.CreateRootSignature(
+    Bytes = bytecode
+)
+assert signature is not None
+pso_desc = native.D3D12_COMPUTE_PIPELINE_STATE_DESC(
+    pRootSignature = signature,
+    CS = native.D3D12_SHADER_BYTECODE(bytecode),
+    NodeMask = 0,
+    CachedPSO = None,
+    Flags = native.D3D12_PIPELINE_STATE_FLAGS.NONE
+)
+pso = device.CreateComputePipelineState(pso_desc)
+
+assert pso is not None
+
+print(CONSOLE_COLOR_GREEN, "Compute PSO Test: SUCCESS", CONSOLE_COLOR_END)
 
 print(CONSOLE_COLOR_GREEN, "SUCCESS", CONSOLE_COLOR_END)

@@ -84,5 +84,15 @@
         "xutility": "cpp",
         "fstream": "cpp",
         "random": "cpp"
-    }
+    },
+    "terminal.integrated.profiles.windows": {
+        "StartBatProfile": {
+            "path": "C:\\Windows\\System32\\cmd.exe",
+            "args": [
+                "/k",
+                "${workspaceFolder}\\scripts\\start.bat"
+            ]
+        }
+    },
+    "terminal.integrated.defaultProfile.windows": "StartBatProfile",
 }
