@@ -31,6 +31,10 @@ if not exist bin\nuget.exe (
     curl --tlsv1.2 -kL https://dist.nuget.org/win-x86-commandline/latest/nuget.exe -o bin\nuget.exe
 )
 
+if not exist bin\Debugviewpp.exe (
+    curl --tlsv1.2 -kL https://github.com/CobaltFusion/DebugViewPP/releases/download/v1.9.0.28/Debugviewpp.exe -o bin\Debugviewpp.exe
+)
+
 @REM Install Agility SDK for D3D12
 if not exist bin\Microsoft.Direct3D.D3D12.1.615.0 (
 @REM https://www.nuget.org/packages/Microsoft.Direct3D.D3D12/1.615.0
@@ -46,7 +50,7 @@ if not exist bin\dxc_2024_07_31 (
 )
 
 @REM ---------------------------------------
-uv pip install setuptools wheel scikit-build scikit-build-core pybind11 cmake
+uv pip install psutil setuptools wheel scikit-build scikit-build-core pybind11 cmake
 @REM ---------------------------------------
 
 powershell

@@ -88,6 +88,23 @@ public:
         return desc;
     }
 };
+class EventWrapper {
+public:
+    HANDLE event = nullptr;
+
+public:
+    EventWrapper() { event = CreateEvent(nullptr, FALSE, FALSE, nullptr); }
+
+    ~EventWrapper() {
+        if (event) CloseHandle(event);
+    }
+
+    HANDLE Get() { return event; }
+    void   Set() { SetEvent(event); }
+    void   Reset() { ResetEvent(event); }
+    void   Wait() { WaitForSingleObject(event, INFINITE); }
+};
+
 class ID3D12FenceWrapper {
 public:
     ID3D12Fence * fence  = nullptr;
@@ -103,7 +120,7 @@ public:
 
     void Signal(UINT64 value) { fence->Signal(value); }
     void GetCompletedValue() { fence->GetCompletedValue(); }
-    void SetEventOnCompletion(UINT64 value, HANDLE hEvent) { fence->SetEventOnCompletion(value, hEvent); }
+    void SetEventOnCompletion(UINT64 value, std::shared_ptr<EventWrapper> Event) { fence->SetEventOnCompletion(value, Event->Get()); }
 };
 class ID3D12PipelineStateWrapper {
 public:
@@ -156,6 +173,72 @@ public:
 
     void Reset() { commandAllocator->Reset(); }
 };
+class ID3D12CommandSignatureWrapper {
+public:
+    ID3D12CommandSignature *commandSignature = nullptr;
+
+public:
+    ID3D12CommandSignatureWrapper(ID3D12CommandSignature *commandSignature) : commandSignature(commandSignature) {}
+
+    ~ID3D12CommandSignatureWrapper() {
+        if (commandSignature) commandSignature->Release();
+    }
+};
+
+class ID3D12ResourceWrapper {
+public:
+    ID3D12Resource * resource  = nullptr;
+    ID3D12Resource1 *resource1 = nullptr;
+    ID3D12Resource2 *resource2 = nullptr;
+
+public:
+    ID3D12ResourceWrapper(ID3D12Resource *resource) : resource(resource) {
+        resource->QueryInterface(IID_PPV_ARGS(&resource1));
+        resource->QueryInterface(IID_PPV_ARGS(&resource2));
+    }
+    ~ID3D12ResourceWrapper() {
+        if (resource) resource->Release();
+        if (resource1) resource1->Release();
+        if (resource2) resource2->Release();
+    }
+    uint64_t GetGPUVirtualAddress() { return (uint64_t)resource->GetGPUVirtualAddress(); }
+    uint64_t Map(UINT Subresource = 0, std::optional<D3D12_RANGE> ReadRange = std::nullopt) {
+        void *data = nullptr;
+        resource->Map(Subresource, ReadRange ? &ReadRange.value() : nullptr, &data);
+        return (uint64_t)data;
+    }
+    void    Unmap(UINT Subresource = 0, std::optional<D3D12_RANGE> ReadRange = std::nullopt) { resource->Unmap(Subresource, ReadRange ? &ReadRange.value() : nullptr); }
+    HRESULT WriteToSubresource(UINT DstSubresource, std::optional<D3D12_BOX> pDstBox, uint64_t pSrcData, UINT SrcRowPitch, UINT SrcDepthPitch) {
+        return resource->WriteToSubresource(DstSubresource, pDstBox ? &pDstBox.value() : nullptr, (const void *)pSrcData, SrcRowPitch, SrcDepthPitch);
+    }
+    HRESULT ReadFromSubresource(uint64_t pDstData, UINT DstRowPitch, UINT DstDepthPitch, UINT SrcSubresource, std::optional<D3D12_BOX> pSrcBox) {
+        return resource->ReadFromSubresource((void *)pDstData, DstRowPitch, DstDepthPitch, SrcSubresource, pSrcBox ? &pSrcBox.value() : nullptr);
+    }
+    std::pair<D3D12_HEAP_PROPERTIES, D3D12_HEAP_FLAGS> GetHeapProperties() {
+        D3D12_HEAP_PROPERTIES heapProperties = {};
+        D3D12_HEAP_FLAGS      heapFlags      = {};
+        HRESULT               hr             = resource->GetHeapProperties(&heapProperties, &heapFlags);
+        ASSERT_HRESULT_PANIC(hr);
+        return {heapProperties, heapFlags};
+    }
+    D3D12_RESOURCE_DESC GetDesc() {
+        D3D12_RESOURCE_DESC desc = resource->GetDesc();
+        return desc;
+    }
+    // Resource1
+    uint64_t GetProtectedResourceSession(GUID riid) {
+        void *  protectedResourceSession = nullptr;
+        HRESULT hr                       = resource1->GetProtectedResourceSession(riid, &protectedResourceSession);
+        ASSERT_HRESULT_PANIC(hr);
+        return (uint64_t)protectedResourceSession;
+    }
+    // Resource2
+    D3D12_RESOURCE_DESC1 GetDesc1() {
+        D3D12_RESOURCE_DESC1 desc = resource2->GetDesc1();
+        return desc;
+    }
+};
+
 class ID3D12GraphicsCommandListWrapper {
 public:
     ID3D12GraphicsCommandList * commandList  = nullptr;
@@ -252,6 +335,19 @@ public:
     void SetGraphicsRootUnorderedAccessView(UINT RootParameterIndex, D3D12_GPU_VIRTUAL_ADDRESS BufferLocation) {
         commandList->SetGraphicsRootUnorderedAccessView(RootParameterIndex, BufferLocation);
     }
+    void CopyBufferRegion(std::shared_ptr<ID3D12ResourceWrapper> pDstBuffer, UINT64 DstOffset, std::shared_ptr<ID3D12ResourceWrapper> pSrcBuffer, UINT64 SrcOffset,
+                          UINT64 NumBytes) {
+        commandList->CopyBufferRegion(pDstBuffer->resource, DstOffset, pSrcBuffer->resource, SrcOffset, NumBytes);
+    }
+    void ResourceBarrier(std::vector<D3D12_RESOURCE_BARRIER> pBarriers) {
+        UINT NumBarriers = (UINT)pBarriers.size();
+        ASSERT_PANIC(NumBarriers <= 16);
+        D3D12_RESOURCE_BARRIER barriers[16];
+        for (UINT i = 0; i < NumBarriers; i++) {
+            barriers[i] = pBarriers[i];
+        }
+        commandList->ResourceBarrier(NumBarriers, barriers);
+    }
     void IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY PrimitiveTopology) { commandList->IASetPrimitiveTopology(PrimitiveTopology); }
     void IASetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW &pView) { commandList->IASetIndexBuffer(&pView); }
     void IASetVertexBuffers(UINT StartSlot, std::vector<D3D12_VERTEX_BUFFER_VIEW> Views) {
@@ -302,6 +398,12 @@ public:
         UINT NumRects = (UINT)Rects.size();
         commandList->ClearDepthStencilView(DepthStencilView, ClearFlags, Depth, Stencil, NumRects, Rects.data());
     }
+    void Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) { commandList->Dispatch(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ); }
+    void ExecuteIndirect(std::shared_ptr<ID3D12CommandSignatureWrapper> pCommandSignature, UINT MaxCommandCount, std::shared_ptr<ID3D12ResourceWrapper> pArgumentBuffer,
+                         UINT64 ArgumentBufferOffset, std::shared_ptr<ID3D12ResourceWrapper> pCountBuffer, UINT64 CountBufferOffset) {
+        commandList->ExecuteIndirect(pCommandSignature->commandSignature, MaxCommandCount, pArgumentBuffer->resource, ArgumentBufferOffset, pCountBuffer->resource,
+                                     CountBufferOffset);
+    }
 };
 
 class ID3D12CommandQueueWrapper {
@@ -326,6 +428,8 @@ public:
         }
         commandQueue->ExecuteCommandLists(NumCommandLists, commandLists);
     }
+
+    // TODO
 };
 
 class IDXGISwapChainWrapper {
@@ -391,6 +495,28 @@ public:
         adapter4->GetDesc3(&desc);
         return desc;
     }
+};
+
+class ID3D12DebugWrapper {
+public:
+    ID3D12Debug *debug = nullptr;
+    ID3D12Debug1 *debug1 = nullptr;
+
+public:
+    ID3D12DebugWrapper() {
+        HRESULT hr = D3D12GetDebugInterface(IID_PPV_ARGS(&debug));
+        ASSERT_HRESULT_PANIC(hr);
+        debug->QueryInterface(IID_PPV_ARGS(&debug1));
+    }
+
+    ~ID3D12DebugWrapper() {
+        if (debug) debug->Release();
+        if (debug1) debug1->Release();
+    }
+
+    void EnableDebugLayer() { debug->EnableDebugLayer(); }
+
+    void SetEnableGPUBasedValidation(BOOL Enable) { debug1->SetEnableGPUBasedValidation(Enable); }
 };
 
 class IDXGIFactoryWrapper {
@@ -462,60 +588,6 @@ public:
         HRESULT         hr        = factory->CreateSwapChain(commandQueue->commandQueue, desc, &swapChain);
         ASSERT_HRESULT_PANIC(hr);
         return std::make_shared<IDXGISwapChainWrapper>(swapChain);
-    }
-};
-
-class ID3D12ResourceWrapper {
-public:
-    ID3D12Resource * resource  = nullptr;
-    ID3D12Resource1 *resource1 = nullptr;
-    ID3D12Resource2 *resource2 = nullptr;
-
-public:
-    ID3D12ResourceWrapper(ID3D12Resource *resource) : resource(resource) {
-        resource->QueryInterface(IID_PPV_ARGS(&resource1));
-        resource->QueryInterface(IID_PPV_ARGS(&resource2));
-    }
-    ~ID3D12ResourceWrapper() {
-        if (resource) resource->Release();
-        if (resource1) resource1->Release();
-        if (resource2) resource2->Release();
-    }
-    uint64_t GetGPUVirtualAddress() { return (uint64_t)resource->GetGPUVirtualAddress(); }
-    uint64_t Map(UINT Subresource = 0, std::optional<D3D12_RANGE> ReadRange = std::nullopt) {
-        void *data = nullptr;
-        resource->Map(Subresource, ReadRange ? &ReadRange.value() : nullptr, &data);
-        return (uint64_t)data;
-    }
-    void    Unmap(UINT Subresource = 0, std::optional<D3D12_RANGE> ReadRange = std::nullopt) { resource->Unmap(Subresource, ReadRange ? &ReadRange.value() : nullptr); }
-    HRESULT WriteToSubresource(UINT DstSubresource, std::optional<D3D12_BOX> pDstBox, uint64_t pSrcData, UINT SrcRowPitch, UINT SrcDepthPitch) {
-        return resource->WriteToSubresource(DstSubresource, pDstBox ? &pDstBox.value() : nullptr, (const void *)pSrcData, SrcRowPitch, SrcDepthPitch);
-    }
-    HRESULT ReadFromSubresource(uint64_t pDstData, UINT DstRowPitch, UINT DstDepthPitch, UINT SrcSubresource, std::optional<D3D12_BOX> pSrcBox) {
-        return resource->ReadFromSubresource((void *)pDstData, DstRowPitch, DstDepthPitch, SrcSubresource, pSrcBox ? &pSrcBox.value() : nullptr);
-    }
-    std::pair<D3D12_HEAP_PROPERTIES, D3D12_HEAP_FLAGS> GetHeapProperties() {
-        D3D12_HEAP_PROPERTIES heapProperties = {};
-        D3D12_HEAP_FLAGS      heapFlags      = {};
-        HRESULT               hr             = resource->GetHeapProperties(&heapProperties, &heapFlags);
-        ASSERT_HRESULT_PANIC(hr);
-        return {heapProperties, heapFlags};
-    }
-    D3D12_RESOURCE_DESC GetDesc() {
-        D3D12_RESOURCE_DESC desc = resource->GetDesc();
-        return desc;
-    }
-    // Resource1
-    uint64_t GetProtectedResourceSession(GUID riid) {
-        void *  protectedResourceSession = nullptr;
-        HRESULT hr                       = resource1->GetProtectedResourceSession(riid, &protectedResourceSession);
-        ASSERT_HRESULT_PANIC(hr);
-        return (uint64_t)protectedResourceSession;
-    }
-    // Resource2
-    D3D12_RESOURCE_DESC1 GetDesc1() {
-        D3D12_RESOURCE_DESC1 desc = resource2->GetDesc1();
-        return desc;
     }
 };
 
@@ -1228,20 +1300,197 @@ PYBIND11_MODULE(native, m) {
         .def("Unmap", &ID3D12ResourceWrapper::Unmap, "Subresource"_a = 0, "ReadRange"_a = std::optional<D3D12_RANGE>{std::nullopt}) //
         ;
 
+    py::enum_<D3D12_COMMAND_LIST_TYPE>(m, "D3D12_COMMAND_LIST_TYPE")
+        .value("DIRECT", D3D12_COMMAND_LIST_TYPE_DIRECT)
+        .value("BUNDLE", D3D12_COMMAND_LIST_TYPE_BUNDLE)
+        .value("COMPUTE", D3D12_COMMAND_LIST_TYPE_COMPUTE)
+        .value("COPY", D3D12_COMMAND_LIST_TYPE_COPY)
+        .export_values();
+
+    py::enum_<D3D12_COMMAND_QUEUE_FLAGS>(m, "D3D12_COMMAND_QUEUE_FLAGS")
+        .value("NONE", D3D12_COMMAND_QUEUE_FLAG_NONE)
+        .value("DISABLE_GPU_TIMEOUT", D3D12_COMMAND_QUEUE_FLAG_DISABLE_GPU_TIMEOUT)
+        .export_values();
+
+    py::class_<D3D12_COMMAND_QUEUE_DESC>(m, "D3D12_COMMAND_QUEUE_DESC") //
+        .def(py::init())                                                //
+        .def(py::init([](D3D12_COMMAND_LIST_TYPE Type, INT Priority, D3D12_COMMAND_QUEUE_FLAGS Flags, UINT NodeMask) {
+                 D3D12_COMMAND_QUEUE_DESC desc = {};
+                 desc.Type                     = Type;
+                 desc.Priority                 = Priority;
+                 desc.Flags                    = Flags;
+                 desc.NodeMask                 = NodeMask;
+                 return desc;
+             }),
+             "Type"_a = D3D12_COMMAND_LIST_TYPE_DIRECT, "Priority"_a = 0, "Flags"_a = D3D12_COMMAND_QUEUE_FLAG_NONE, "NodeMask"_a = 0) //
+        .def_readwrite("Type", &D3D12_COMMAND_QUEUE_DESC::Type)                                                                        //
+        .def_readwrite("Priority", &D3D12_COMMAND_QUEUE_DESC::Priority)                                                                //
+        .def_readwrite("Flags", &D3D12_COMMAND_QUEUE_DESC::Flags)                                                                      //
+        .def_readwrite("NodeMask", &D3D12_COMMAND_QUEUE_DESC::NodeMask)                                                                //
+        ;
     py::class_<ID3D12PipelineStateWrapper, std::shared_ptr<ID3D12PipelineStateWrapper>>(m, "ID3D12PipelineState") //
         ;
-    py::class_<ID3D12DeviceWrapper, std::shared_ptr<ID3D12DeviceWrapper>>(m, "ID3D12Device")                //
-        .def(py::init<ID3D12Device *>())                                                                    //
-        .def("CreateCommittedResource", &ID3D12DeviceWrapper::CreateCommittedResource,                      //
-             "heapProperties"_a,                                                                            //
-             "heapFlags"_a,                                                                                 //
-             "resourceDesc"_a,                                                                              //
-             "initialState"_a,                                                                              //
-             "optimizedClearValue"_a = std::optional<D3D12_CLEAR_VALUE>{}                                   //
-             )                                                                                              //
-        .def("CreateRootSignature", &ID3D12DeviceWrapper::CreateRootSignature, "NodeMask"_a = 0, "Bytes"_a) //
-        .def("CreateComputePipelineState", &ID3D12DeviceWrapper::CreateComputePipelineState)                //
+    py::class_<ID3D12CommandQueueWrapper, std::shared_ptr<ID3D12CommandQueueWrapper>>(m, "ID3D12CommandQueue")
+        .def("ExecuteCommandLists", &ID3D12CommandQueueWrapper::ExecuteCommandLists, "CommandLists"_a) //
+        .def("Signal", &ID3D12CommandQueueWrapper::Signal, "Fence"_a, "Value"_a)                       //
+        .def("Wait", &ID3D12CommandQueueWrapper::Wait, "Fence"_a, "Value"_a)                           //
+        ;
+
+    py::enum_<D3D12_FENCE_FLAGS>(m, "D3D12_FENCE_FLAGS", py::arithmetic())
+        .value("NONE", D3D12_FENCE_FLAG_NONE)
+        .value("SHARED", D3D12_FENCE_FLAG_SHARED)
+        .value("SHARED_CROSS_ADAPTER", D3D12_FENCE_FLAG_SHARED_CROSS_ADAPTER)
+        .value("NON_MONITORED", D3D12_FENCE_FLAG_NON_MONITORED)
+        .export_values();
+
+    py::class_<EventWrapper, std::shared_ptr<EventWrapper>>(m, "Event") //
+        .def(py::init())                                                //
+        .def("Set", &EventWrapper::Set)                                 //
+        .def("Wait", &EventWrapper::Wait)                               //
+        .def("Reset", &EventWrapper::Reset)                             //
+        ;
+    py::class_<ID3D12FenceWrapper, std::shared_ptr<ID3D12FenceWrapper>>(m, "ID3D12Fence")             //
+        .def(py::init<ID3D12Fence *>())                                                               //
+        .def("GetCompletedValue", &ID3D12FenceWrapper::GetCompletedValue)                             //
+        .def("SetEventOnCompletion", &ID3D12FenceWrapper::SetEventOnCompletion, "Value"_a, "Event"_a) //
+        .def("Signal", &ID3D12FenceWrapper::Signal, "Value"_a)                                        //
+        ;
+
+    py::class_<ID3D12CommandAllocatorWrapper, std::shared_ptr<ID3D12CommandAllocatorWrapper>>(m, "ID3D12CommandAllocator") //
+        .def(py::init<ID3D12CommandAllocator *>())                                                                         //
+        .def("Reset", &ID3D12CommandAllocatorWrapper::Reset)                                                               //
+        ;
+
+    py::class_<D3D12_RESOURCE_TRANSITION_BARRIER>(m, "D3D12_RESOURCE_TRANSITION_BARRIER")                                                                           //
+        .def(py::init())                                                                                                                                            //
+        .def(py::init([](std::shared_ptr<ID3D12ResourceWrapper> pResource, UINT Subresource, D3D12_RESOURCE_STATES StateBefore, D3D12_RESOURCE_STATES StateAfter) { //
+                 D3D12_RESOURCE_TRANSITION_BARRIER barrier = {};
+                 barrier.pResource                         = pResource->resource;
+                 barrier.Subresource                       = Subresource;
+                 barrier.StateBefore                       = StateBefore;
+                 barrier.StateAfter                        = StateAfter;
+                 return barrier;
+             }),
+             "Resource"_a, "Subresource"_a = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, "StateBefore"_a, "StateAfter"_a)
+        .def_readwrite("Resource", &D3D12_RESOURCE_TRANSITION_BARRIER::pResource)
+        .def_readwrite("Subresource", &D3D12_RESOURCE_TRANSITION_BARRIER::Subresource)
+        .def_readwrite("StateBefore", &D3D12_RESOURCE_TRANSITION_BARRIER::StateBefore)
+        .def_readwrite("StateAfter", &D3D12_RESOURCE_TRANSITION_BARRIER::StateAfter);
+
+    py::class_<D3D12_RESOURCE_ALIASING_BARRIER>(m, "D3D12_RESOURCE_ALIASING_BARRIER")                                                     //
+        .def(py::init())                                                                                                                  //
+        .def(py::init([](std::shared_ptr<ID3D12ResourceWrapper> pResourceBefore, std::shared_ptr<ID3D12ResourceWrapper> pResourceAfter) { //
+                 D3D12_RESOURCE_ALIASING_BARRIER barrier = {};
+                 barrier.pResourceBefore                 = pResourceBefore->resource;
+                 barrier.pResourceAfter                  = pResourceAfter->resource;
+                 return barrier;
+             }),
+             "ResourceBefore"_a, "ResourceAfter"_a)
+        .def_readwrite("ResourceBefore", &D3D12_RESOURCE_ALIASING_BARRIER::pResourceBefore)
+        .def_readwrite("ResourceAfter", &D3D12_RESOURCE_ALIASING_BARRIER::pResourceAfter);
+
+    py::class_<D3D12_RESOURCE_UAV_BARRIER>(m, "D3D12_RESOURCE_UAV_BARRIER")  //
+        .def(py::init())                                                     //
+        .def(py::init([](std::shared_ptr<ID3D12ResourceWrapper> pResource) { //
+                 D3D12_RESOURCE_UAV_BARRIER barrier = {};
+                 barrier.pResource                  = pResource->resource;
+                 return barrier;
+             }),
+             "Resource"_a)
+        .def_readwrite("Resource", &D3D12_RESOURCE_UAV_BARRIER::pResource);
+
+    py::enum_<D3D12_RESOURCE_BARRIER_FLAGS>(m, "D3D12_RESOURCE_BARRIER_FLAGS", py::arithmetic())
+        .value("NONE", D3D12_RESOURCE_BARRIER_FLAG_NONE)
+        .value("BEGIN_ONLY", D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY)
+        .value("END_ONLY", D3D12_RESOURCE_BARRIER_FLAG_END_ONLY)
+        .export_values();
+
+    py::enum_<D3D12_RESOURCE_BARRIER_TYPE>(m, "D3D12_RESOURCE_BARRIER_TYPE")
+        .value("TRANSITION", D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
+        .value("ALIASING", D3D12_RESOURCE_BARRIER_TYPE_ALIASING)
+        .value("UAV", D3D12_RESOURCE_BARRIER_TYPE_UAV)
+        .export_values();
+
+    py::class_<D3D12_RESOURCE_BARRIER>(m, "D3D12_RESOURCE_BARRIER")                                         //
+        .def(py::init())                                                                                    //
+        .def(py::init([](D3D12_RESOURCE_TRANSITION_BARRIER Transition, D3D12_RESOURCE_BARRIER_FLAGS Flag) { //
+                 D3D12_RESOURCE_BARRIER barrier = {};
+                 barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                 barrier.Flags                  = Flag;
+                 barrier.Transition             = Transition;
+                 return barrier;
+             }),
+             "Transition"_a, "Flags"_a = D3D12_RESOURCE_BARRIER_FLAG_NONE)                              //
+        .def(py::init([](D3D12_RESOURCE_ALIASING_BARRIER Aliasing, D3D12_RESOURCE_BARRIER_FLAGS Flag) { //
+                 D3D12_RESOURCE_BARRIER barrier = {};
+                 barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+                 barrier.Flags                  = Flag;
+                 barrier.Aliasing               = Aliasing;
+                 return barrier;
+             }),
+             "Aliasing"_a, "Flags"_a = D3D12_RESOURCE_BARRIER_FLAG_NONE)                      //
+        .def(py::init([](D3D12_RESOURCE_UAV_BARRIER UAV, D3D12_RESOURCE_BARRIER_FLAGS Flag) { //
+                 D3D12_RESOURCE_BARRIER barrier = {};
+                 barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                 barrier.Flags                  = Flag;
+                 barrier.UAV                    = UAV;
+                 return barrier;
+             }),
+             "UAV"_a, "Flags"_a = D3D12_RESOURCE_BARRIER_FLAG_NONE)       //
+        .def_readwrite("Type", &D3D12_RESOURCE_BARRIER::Type)             //
+        .def_readwrite("Flags", &D3D12_RESOURCE_BARRIER::Flags)           //
+        .def_readwrite("Transition", &D3D12_RESOURCE_BARRIER::Transition) //
+        .def_readwrite("Aliasing", &D3D12_RESOURCE_BARRIER::Aliasing)     //
+        .def_readwrite("UAV", &D3D12_RESOURCE_BARRIER::UAV)               //
+        ;
+
+    py::class_<ID3D12GraphicsCommandListWrapper, std::shared_ptr<ID3D12GraphicsCommandListWrapper>>(m, "ID3D12GraphicsCommandList")                              //
+        .def(py::init<ID3D12GraphicsCommandList *>())                                                                                                            //
+        .def("Close", &ID3D12GraphicsCommandListWrapper::Close)                                                                                                  //
+        .def("Reset", &ID3D12GraphicsCommandListWrapper::Reset, "Allocator"_a, "InitialPSO"_a)                                                                   //
+        .def("SetPipelineState", &ID3D12GraphicsCommandListWrapper::SetPipelineState, "PipelineState"_a)                                                         //
+        .def("SetComputeRootSignature", &ID3D12GraphicsCommandListWrapper::SetComputeRootSignature, "RootSignature"_a)                                           //
+        .def("SetComputeRoot32BitConstant", &ID3D12GraphicsCommandListWrapper::SetComputeRoot32BitConstant, "RootParameterIndex"_a, "SrcData"_a, "DestOffset"_a) //
+        .def("SetComputeRoot32BitConstants", &ID3D12GraphicsCommandListWrapper::SetComputeRoot32BitConstants, "RootParameterIndex"_a, "Num32BitValuesToSet"_a, "SrcData"_a,
+             "DestOffset"_a)                                                                                                                                        //
+        .def("SetComputeRootConstantBufferView", &ID3D12GraphicsCommandListWrapper::SetComputeRootConstantBufferView, "RootParameterIndex"_a, "BufferLocation"_a)   //
+        .def("SetComputeRootShaderResourceView", &ID3D12GraphicsCommandListWrapper::SetComputeRootShaderResourceView, "RootParameterIndex"_a, "BufferLocation"_a)   //
+        .def("SetComputeRootUnorderedAccessView", &ID3D12GraphicsCommandListWrapper::SetComputeRootUnorderedAccessView, "RootParameterIndex"_a, "BufferLocation"_a) //
+        .def("Dispatch", &ID3D12GraphicsCommandListWrapper::Dispatch, "ThreadGroupCountX"_a, "ThreadGroupCountY"_a, "ThreadGroupCountZ"_a)                          //
+        .def("CopyBufferRegion", &ID3D12GraphicsCommandListWrapper::CopyBufferRegion, "DestBuffer"_a, "DestOffset"_a, "SrcBuffer"_a, "SrcOffset"_a, "NumBytes"_a)   //
+        .def("ResourceBarrier", &ID3D12GraphicsCommandListWrapper::ResourceBarrier, "Barriers"_a)                                                                   //
+        ;
+
+    py::class_<ID3D12DeviceWrapper, std::shared_ptr<ID3D12DeviceWrapper>>(m, "ID3D12Device")                                                                //
+        .def(py::init<ID3D12Device *>())                                                                                                                    //
+        .def("CreateCommittedResource", &ID3D12DeviceWrapper::CreateCommittedResource,                                                                      //
+             "heapProperties"_a,                                                                                                                            //
+             "heapFlags"_a,                                                                                                                                 //
+             "resourceDesc"_a,                                                                                                                              //
+             "initialState"_a,                                                                                                                              //
+             "optimizedClearValue"_a = std::optional<D3D12_CLEAR_VALUE>{}                                                                                   //
+             )                                                                                                                                              //
+        .def("CreateRootSignature", &ID3D12DeviceWrapper::CreateRootSignature, "NodeMask"_a = 0, "Bytes"_a)                                                 //
+        .def("CreateComputePipelineState", &ID3D12DeviceWrapper::CreateComputePipelineState)                                                                //
+        .def("CreateCommandQueue", &ID3D12DeviceWrapper::CreateCommandQueue, "Desc"_a)                                                                      //
+        .def("CreateFence", &ID3D12DeviceWrapper::CreateFence, "InitialValue"_a = 0, "Flags"_a = D3D12_FENCE_FLAG_NONE)                                     //
+        .def("CreateCommandAllocator", &ID3D12DeviceWrapper::CreateCommandAllocator, "Type"_a)                                                              //
+        .def("CreateCommandList", &ID3D12DeviceWrapper::CreateCommandList, "NodeMask"_a, "Type"_a, "Allocator"_a, "InitialPSO"_a = nullptr)                 //
+        .def("CreateDescriptorHeap", &ID3D12DeviceWrapper::CreateDescriptorHeap, "Desc"_a)                                                                  //
+        .def("CreateShaderResourceView", &ID3D12DeviceWrapper::CreateShaderResourceView, "Resource"_a, "Desc"_a, "DestDescriptor"_a)                        //
+        .def("CreateGraphicsPipelineState", &ID3D12DeviceWrapper::CreateGraphicsPipelineState, "Desc"_a)                                                    //
+        .def("CreateRenderTargetView", &ID3D12DeviceWrapper::CreateRenderTargetView, "Resource"_a, "Desc"_a, "DestDescriptor"_a)                            //
+        .def("CreateDepthStencilView", &ID3D12DeviceWrapper::CreateDepthStencilView, "Resource"_a, "Desc"_a, "DestDescriptor"_a)                            //
+        .def("CreateConstantBufferView", &ID3D12DeviceWrapper::CreateConstantBufferView, "Desc"_a, "DestDescriptor"_a)                                      //
+        .def("CreateUnorderedAccessView", &ID3D12DeviceWrapper::CreateUnorderedAccessView, "Resource"_a, "CounterResource"_a, "Desc"_a, "DestDescriptor"_a) //
+        .def("CreateSampler", &ID3D12DeviceWrapper::CreateSampler, "Desc"_a, "DestDescriptor"_a)                                                            //
         ;
 
     m.def("CreateDevice", &CreateDevice);
+
+    py::class_<ID3D12DebugWrapper, std::shared_ptr<ID3D12DebugWrapper>>(m, "ID3D12Debug") //
+        .def(py::init())                                                                 //
+        .def("EnableDebugLayer", &ID3D12DebugWrapper::EnableDebugLayer)                   //
+        .def("SetEnableGPUBasedValidation", &ID3D12DebugWrapper::SetEnableGPUBasedValidation) //
+        ;
 }

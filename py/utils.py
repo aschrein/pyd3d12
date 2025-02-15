@@ -23,10 +23,29 @@
 import os, sys
 from pathlib import Path
 import importlib.util
+import psutil
+import subprocess
+import time
 
 CONSOLE_COLOR_RED = "\033[91m"
 CONSOLE_COLOR_GREEN = "\033[92m"
 CONSOLE_COLOR_END = "\033[0m"
+
+def launch_debugviewpp(exe_path=r"bin\\DebugViewpp.exe"):
+    # Check if an instance is already running.
+    for proc in psutil.process_iter(['name']):
+        if proc.info['name'] and proc.info['name'].lower() == "debugviewpp.exe":
+            print("DebugView++ is already running.")
+            return
+
+    # Launch DebugView++ if not running.
+    if os.path.exists(exe_path):
+        subprocess.Popen([exe_path])
+        # sleep for 1 second to allow DebugView++ to start.
+        time.sleep(1)
+        print("Launched DebugView++.")
+    else:
+        print(f"Executable not found: {exe_path}")
 
 def quote_path(path):
     if isinstance(path, Path):
