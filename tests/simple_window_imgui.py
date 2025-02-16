@@ -212,7 +212,7 @@ class MainWindow:
             }
             [RootSignature(ROOT_SIGNATURE_MACRO)]
             float4 PSMain(PSInput input) : SV_TARGET {
-                return pow(t0.SampleLevel(s0, input.color.xy, 0.0), float(1.0 / 2.0));
+                return pow(t0.SampleLevel(s0, input.color.xy, input.color.x * float(8.0)), float(1.0 / 1.0));
                 // return t0[abs(input.color.xy) * 512];
                 // return input.color;
             }

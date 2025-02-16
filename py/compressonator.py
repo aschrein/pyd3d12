@@ -69,7 +69,21 @@ def compressonator_cli_run(args):
     print("Running: " + " ".join(args))
     subprocess.run(args)
 
+def compress(input_file, output_file, num_mips=8, format="BC7"):
+    # compressonator_cli_run(["-fd", "BC7", "-EncodeWith", "GPU", "-miplevels", str(num_mips), "-GenGPUMipMaps", input_file, output_file])
+    compressonator_cli_run(["-fd", format, "-EncodeWith", "CPU", "-miplevels", str(num_mips), input_file, output_file])
 
 if __name__ == "__main__":
-    print(find_compressonator_cli())
+    # print(find_compressonator_cli())
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Compressonator CLI")
+    parser.add_argument("--input_file", type=str, help="Input file")
+    parser.add_argument("--output_file", type=str, help="Output file")
+    parser.add_argument("--format", type=str, help="Output format", default="BC7")
+    parser.add_argument("--num_mips", type=int, help="Number of mip levels", default=8)
+
+    args = parser.parse_args()
+
+    compress(args.input_file, args.output_file, args.num_mips, args.format)
 

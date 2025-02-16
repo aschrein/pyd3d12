@@ -175,6 +175,7 @@ def make_texture_from_dds(device, dds : DDSTexture):
     dst_data_ptr        = upload_buffer.Map(0, None)
     src_data_ptr        = dds.buf_ref.ptr
     src_bpp             = dds_get_bytes_per_pixel(DXGI_FORMAT(dds.dx10_header.dxgi_format))
+    is_block_compressed = dds_is_format_compressed(DXGI_FORMAT(dds.dx10_header.dxgi_format))
     src_offset          = 0
     dst_offset          = 0
 
@@ -192,6 +193,7 @@ def make_texture_from_dds(device, dds : DDSTexture):
         for mip_idx in range(dds.header.mip_map_count):
             cur_width       = max(1, dds.header.width >> mip_idx)
             src_pitch       = src_bpp * cur_width
+            if is_block_compressed: src_pitch = max(1, (cur_width + 3) // 4) * src_bpp
             subresource_idx = mip_idx + array_idx * dds.header.mip_map_count
             dst_offset      = copyable_footprints.Layouts[subresource_idx].Offset
             footprint       = copyable_footprints.Layouts[subresource_idx].Footprint

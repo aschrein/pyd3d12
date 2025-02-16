@@ -156,12 +156,26 @@ class DXGI_FORMAT(IntEnum):
 def dds_is_format_compressed(dxgi_format: DXGI_FORMAT) -> bool:
     return dxgi_format in [
         DXGI_FORMAT.BC1_TYPELESS,
+        DXGI_FORMAT.BC1_UNORM,
+        DXGI_FORMAT.BC1_UNORM_SRGB,
         DXGI_FORMAT.BC2_TYPELESS,
+        DXGI_FORMAT.BC2_UNORM,
+        DXGI_FORMAT.BC2_UNORM_SRGB,
         DXGI_FORMAT.BC3_TYPELESS,
+        DXGI_FORMAT.BC3_UNORM,
+        DXGI_FORMAT.BC3_UNORM_SRGB,
         DXGI_FORMAT.BC4_TYPELESS,
+        DXGI_FORMAT.BC4_UNORM,
+        DXGI_FORMAT.BC4_SNORM,
         DXGI_FORMAT.BC5_TYPELESS,
+        DXGI_FORMAT.BC5_UNORM,
+        DXGI_FORMAT.BC5_SNORM,
         DXGI_FORMAT.BC6H_TYPELESS,
-        DXGI_FORMAT.BC7_TYPELESS
+        DXGI_FORMAT.BC6H_UF16,
+        DXGI_FORMAT.BC6H_SF16,
+        DXGI_FORMAT.BC7_TYPELESS,
+        DXGI_FORMAT.BC7_UNORM,
+        DXGI_FORMAT.BC7_UNORM_SRGB,
     ]
 
 def dds_get_bytes_per_block(dxgi_format: DXGI_FORMAT) -> int:
@@ -188,7 +202,7 @@ def dds_get_bytes_per_block(dxgi_format: DXGI_FORMAT) -> int:
         DXGI_FORMAT.BC7_UNORM: 16,
         DXGI_FORMAT.BC7_UNORM_SRGB: 16
         }
-    return map.get(dxgi_format, 0)
+    return map[dxgi_format]
 
 def dds_get_bytes_per_pixel(dxgi_format: DXGI_FORMAT) -> int:
     if dds_is_format_compressed(dxgi_format): return dds_get_bytes_per_block(dxgi_format)
@@ -273,7 +287,7 @@ def dds_get_bytes_per_pixel(dxgi_format: DXGI_FORMAT) -> int:
         DXGI_FORMAT.V208: 0,
         DXGI_FORMAT.V408: 0,
         }
-    return map.get(dxgi_format, 0)
+    return map[dxgi_format]
 
 
 # https://github.com/Microsoft/DirectXTex/blob/main/DirectXTex/DDS.h
