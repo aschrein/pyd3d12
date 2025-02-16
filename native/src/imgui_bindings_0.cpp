@@ -45,8 +45,12 @@ public:
 
 class ContextWrapper {
 public:
-    ImGuiContext *ctx  = nullptr;
-    HWND          hwnd = {};
+    ImGuiContext *             ctx                  = nullptr;
+    HWND                       hwnd                 = {};
+    std::vector<unsigned char> font_pixels          = {};
+    int                        font_width           = {};
+    int                        font_height          = {};
+    int                        font_bytes_per_pixel = {};
 
 public:
     ContextWrapper() {}
@@ -60,14 +64,18 @@ public:
         io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
         io.MouseDrawCursor         = true;
         unsigned char *out_pixels  = {};
-        int            out_width;
-        int            out_height;
-        int            out_bytes_per_pixel;
-        io.Fonts->GetTexDataAsRGBA32(&out_pixels, &out_width, &out_height, &out_bytes_per_pixel);
-        std::vector<unsigned char> pixels;
-        pixels.resize(out_width * out_height * out_bytes_per_pixel);
-        memcpy(pixels.data(), out_pixels, pixels.size());
+
+        io.Fonts->GetTexDataAsRGBA32(&out_pixels, &font_width, &font_height, &font_bytes_per_pixel);
+        font_pixels.resize(font_width * font_height * font_bytes_per_pixel);
+        ASSERT_PANIC(font_pixels.size() == font_width * font_height * font_bytes_per_pixel);
+        ASSERT_PANIC(font_bytes_per_pixel == 4);
+        memcpy(font_pixels.data(), out_pixels, font_pixels.size());
     }
+
+    uint64_t GetFontTexturePtr() { return (uint64_t)font_pixels.data(); }
+    int      GetFontTextureWidth() { return font_width; }
+    int      GetFontTextureHeight() { return font_height; }
+    int      GetFontTextureBytesPerPixel() { return font_bytes_per_pixel; }
 
                   operator ImGuiContext *() { return ctx; }
     ImGuiContext *operator->() { return ctx; }
@@ -137,7 +145,14 @@ void export_imgui_0(py::module &m) {
         ;
 
     py::class_<ContextWrapper, std::shared_ptr<ContextWrapper>>(m, "Context") //
-        .def(py::init<>());
+        .def(py::init<>())
+        .def(py::init<ImGuiContext *, uint64_t>(), "ctx"_a, "hwnd"_a)                     //
+        .def("GetFontTexturePtr", &ContextWrapper::GetFontTexturePtr)                     //
+        .def("GetFontTextureWidth", &ContextWrapper::GetFontTextureWidth)                 //
+        .def("GetFontTextureHeight", &ContextWrapper::GetFontTextureHeight)               //
+        .def("GetFontTextureBytesPerPixel", &ContextWrapper::GetFontTextureBytesPerPixel) //
+        .def("Destroy", &ContextWrapper::Destroy)                                         //
+        ;
 
     enum _ImGuiWindowFlags {
         _ImGuiWindowFlags_None                      = 0,
@@ -171,6 +186,15 @@ void export_imgui_0(py::module &m) {
         _ImGuiWindowFlags_Modal                     = 1 << 27,
         _ImGuiWindowFlags_ChildMenu                 = 1 << 28
     };
+
+    enum _ImGuiCond { _ImGuiCond_None = 0, _ImGuiCond_Always = 1 << 0, _ImGuiCond_Once = 1 << 1, _ImGuiCond_FirstUse = 1 << 2, _ImGuiCond_Appearing = 1 << 3 };
+
+    py::enum_<_ImGuiCond>(m, "ImGuiCond", py::arithmetic())
+        .value("None", _ImGuiCond_None)
+        .value("Always", _ImGuiCond_Always)
+        .value("Once", _ImGuiCond_Once)
+        .value("FirstUse", _ImGuiCond_FirstUse)
+        .value("Appearing", _ImGuiCond_Appearing);
 
     py::enum_<_ImGuiWindowFlags>(m, "WindowFlags", py::arithmetic())
         .value("None", _ImGuiWindowFlags_None)
@@ -221,6 +245,7 @@ void export_imgui_0(py::module &m) {
     m.def("DestroyContext", [](std::shared_ptr<ContextWrapper> ctx) { ctx->Destroy(); });
     m.def("Render", &ImGui::Render);
     m.def("NewFrame", &ImGui::NewFrame);
+    m.def("SetNextWindowSize", &ImGui::SetNextWindowSize, "size"_a, "cond"_a = _ImGuiCond_None);
     // m.def("Initialize", &ImGui::Initialize);
     // m.def("Shutdown", &ImGui::Shutdown);
 }

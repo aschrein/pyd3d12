@@ -153,6 +153,128 @@ class DXGI_FORMAT(IntEnum):
     V408 = 132,
     FORCE_UINT = 0xffffffff
 
+def dds_is_format_compressed(dxgi_format: DXGI_FORMAT) -> bool:
+    return dxgi_format in [
+        DXGI_FORMAT.BC1_TYPELESS,
+        DXGI_FORMAT.BC2_TYPELESS,
+        DXGI_FORMAT.BC3_TYPELESS,
+        DXGI_FORMAT.BC4_TYPELESS,
+        DXGI_FORMAT.BC5_TYPELESS,
+        DXGI_FORMAT.BC6H_TYPELESS,
+        DXGI_FORMAT.BC7_TYPELESS
+    ]
+
+def dds_get_bytes_per_block(dxgi_format: DXGI_FORMAT) -> int:
+    map = {
+        DXGI_FORMAT.BC1_TYPELESS: 8,
+        DXGI_FORMAT.BC1_UNORM: 8,
+        DXGI_FORMAT.BC1_UNORM_SRGB: 8,
+        DXGI_FORMAT.BC2_TYPELESS: 16,
+        DXGI_FORMAT.BC2_UNORM: 16,
+        DXGI_FORMAT.BC2_UNORM_SRGB: 16,
+        DXGI_FORMAT.BC3_TYPELESS: 16,
+        DXGI_FORMAT.BC3_UNORM: 16,
+        DXGI_FORMAT.BC3_UNORM_SRGB: 16,
+        DXGI_FORMAT.BC4_TYPELESS: 8,
+        DXGI_FORMAT.BC4_UNORM: 8,
+        DXGI_FORMAT.BC4_SNORM: 8,
+        DXGI_FORMAT.BC5_TYPELESS: 16,
+        DXGI_FORMAT.BC5_UNORM: 16,
+        DXGI_FORMAT.BC5_SNORM: 16,
+        DXGI_FORMAT.BC6H_TYPELESS: 16,
+        DXGI_FORMAT.BC6H_UF16: 16,
+        DXGI_FORMAT.BC6H_SF16: 16,
+        DXGI_FORMAT.BC7_TYPELESS: 16,
+        DXGI_FORMAT.BC7_UNORM: 16,
+        DXGI_FORMAT.BC7_UNORM_SRGB: 16
+        }
+    return map.get(dxgi_format, 0)
+
+def dds_get_bytes_per_pixel(dxgi_format: DXGI_FORMAT) -> int:
+    if dds_is_format_compressed(dxgi_format): return dds_get_bytes_per_block(dxgi_format)
+    map = {
+        DXGI_FORMAT.R32G32B32A32_FLOAT: 16,
+        DXGI_FORMAT.R32G32B32A32_UINT: 16,
+        DXGI_FORMAT.R32G32B32A32_SINT: 16,
+        DXGI_FORMAT.R32G32B32_FLOAT: 12,
+        DXGI_FORMAT.R32G32B32_UINT: 12,
+        DXGI_FORMAT.R32G32B32_SINT: 12,
+        DXGI_FORMAT.R16G16B16A16_FLOAT: 8,
+        DXGI_FORMAT.R16G16B16A16_UNORM: 8,
+        DXGI_FORMAT.R16G16B16A16_UINT: 8,
+        DXGI_FORMAT.R16G16B16A16_SNORM: 8,
+        DXGI_FORMAT.R16G16B16A16_SINT: 8,
+        DXGI_FORMAT.R32G32_FLOAT: 8,
+        DXGI_FORMAT.R32G32_UINT: 8,
+        DXGI_FORMAT.R32G32_SINT: 8,
+        DXGI_FORMAT.R10G10B10A2_UNORM: 4,
+        DXGI_FORMAT.R10G10B10A2_UINT: 4,
+        DXGI_FORMAT.R11G11B10_FLOAT: 4,
+        DXGI_FORMAT.R8G8B8A8_UNORM: 4,
+        DXGI_FORMAT.R8G8B8A8_UNORM_SRGB: 4,
+        DXGI_FORMAT.R8G8B8A8_UINT: 4,
+        DXGI_FORMAT.R8G8B8A8_SNORM: 4,
+        DXGI_FORMAT.R8G8B8A8_SINT: 4,
+        DXGI_FORMAT.R16G16_FLOAT: 4,
+        DXGI_FORMAT.R16G16_UNORM: 4,
+        DXGI_FORMAT.R16G16_UINT: 4,
+        DXGI_FORMAT.R16G16_SNORM: 4,
+        DXGI_FORMAT.R16G16_SINT: 4,
+        DXGI_FORMAT.R32_FLOAT: 4,
+        DXGI_FORMAT.R32_UINT: 4,
+        DXGI_FORMAT.R32_SINT: 4,
+        DXGI_FORMAT.R8G8_UNORM: 2,
+        DXGI_FORMAT.R8G8_UINT: 2,
+        DXGI_FORMAT.R8G8_SNORM: 2,
+        DXGI_FORMAT.R8G8_SINT: 2,
+        DXGI_FORMAT.R16_FLOAT: 2,
+        DXGI_FORMAT.R16_UNORM: 2,
+        DXGI_FORMAT.R16_UINT: 2,
+        DXGI_FORMAT.R16_SNORM: 2,
+        DXGI_FORMAT.R16_SINT: 2,
+        DXGI_FORMAT.R8_UNORM: 1,
+        DXGI_FORMAT.R8_UINT: 1,
+        DXGI_FORMAT.R8_SNORM: 1,
+        DXGI_FORMAT.R8_SINT: 1,
+        DXGI_FORMAT.A8_UNORM: 1,
+        DXGI_FORMAT.R1_UNORM: 1,
+        DXGI_FORMAT.R9G9B9E5_SHAREDEXP: 4,
+        DXGI_FORMAT.R8G8_B8G8_UNORM: 4,
+        DXGI_FORMAT.G8R8_G8B8_UNORM: 4,
+        DXGI_FORMAT.B5G6R5_UNORM: 2,
+        DXGI_FORMAT.B5G5R5A1_UNORM: 2,
+        DXGI_FORMAT.B8G8R8A8_UNORM: 4,
+        DXGI_FORMAT.B8G8R8X8_UNORM: 4,
+        DXGI_FORMAT.R10G10B10_XR_BIAS_A2_UNORM: 4,
+        DXGI_FORMAT.B8G8R8A8_TYPELESS: 4,
+        DXGI_FORMAT.B8G8R8A8_UNORM_SRGB: 4,
+        DXGI_FORMAT.B8G8R8X8_TYPELESS: 4,
+        DXGI_FORMAT.B8G8R8X8_UNORM_SRGB: 4,
+        DXGI_FORMAT.AYUV: 4,
+        DXGI_FORMAT.Y410: 4,
+        DXGI_FORMAT.Y416: 8,
+        DXGI_FORMAT.NV12: 1,
+        DXGI_FORMAT.P010: 2,
+        DXGI_FORMAT.P016: 2,
+        DXGI_FORMAT._420_OPAQUE: 0,
+        DXGI_FORMAT.YUY2: 2,
+        DXGI_FORMAT.Y210: 4,
+        DXGI_FORMAT.Y216: 8,
+        DXGI_FORMAT.NV11: 1,
+        DXGI_FORMAT.AI44: 0,
+        DXGI_FORMAT.IA44: 0,
+        DXGI_FORMAT.P8: 0,
+        DXGI_FORMAT.A8P8: 0,
+        DXGI_FORMAT.B4G4R4A4_UNORM: 2,
+        DXGI_FORMAT.P208: 0,
+        DXGI_FORMAT.V208: 0,
+        DXGI_FORMAT.V408: 0,
+        DXGI_FORMAT.P208: 0,
+        DXGI_FORMAT.V208: 0,
+        DXGI_FORMAT.V408: 0,
+        }
+    return map.get(dxgi_format, 0)
+
 
 # https://github.com/Microsoft/DirectXTex/blob/main/DirectXTex/DDS.h
 
@@ -211,9 +333,9 @@ class DDS_HEADER(ctypes.Structure):
         ("flags", ctypes.c_uint32),
         ("height", ctypes.c_uint32),
         ("width", ctypes.c_uint32),
-        ("pitchOrLinearSize", ctypes.c_uint32),
+        ("pitch_or_linear_size", ctypes.c_uint32),
         ("depth", ctypes.c_uint32),
-        ("mipMapCount", ctypes.c_uint32),
+        ("mip_map_count", ctypes.c_uint32),
         ("reserved1", ctypes.c_uint32 * 11),
         ("ddspf", PIXELFORMAT),
         ("caps", ctypes.c_uint32),
@@ -228,9 +350,9 @@ class DDS_HEADER(ctypes.Structure):
         print(f"Flags: {self.flags}")
         print(f"Height: {self.height}")
         print(f"Width: {self.width}")
-        print(f"PitchOrLinearSize: {self.pitchOrLinearSize}")
+        print(f"pitch_or_linear_size: {self.pitch_or_linear_size}")
         print(f"Depth: {self.depth}")
-        print(f"MipMapCount: {self.mipMapCount}")
+        print(f"MipMapCount: {self.mip_map_count}")
         print(f"reserved1: {self.reserved1}")
         self.ddspf.Print()
         print(f"Caps: {self.caps}")
@@ -238,21 +360,32 @@ class DDS_HEADER(ctypes.Structure):
         print(f"Caps3: {self.caps3}")
         print(f"Caps4: {self.caps4}")
 
+class D3D10_RESOURCE_DIMENSION(Enum):
+    UNKNOWN = 0
+    BUFFER = 1
+    TEXTURE1D = 2
+    TEXTURE2D = 3
+    TEXTURE3D = 4
+
+class D3D10_RESOURCE_MISC_FLAG(Enum):
+    TEXTURECUBE = 0x4
+
+
 class DDS_HEADER_DXT10(ctypes.Structure):
     _fields_ = [
-        ("dxgiFormat", ctypes.c_uint32),
-        ("resourceDimension", ctypes.c_uint32),
-        ("miscFlag", ctypes.c_uint32),
-        ("arraySize", ctypes.c_uint32),
-        ("miscFlags2", ctypes.c_uint32)
+        ("dxgi_format", ctypes.c_uint32),
+        ("resource_dimension", ctypes.c_uint32),
+        ("misc_flag", ctypes.c_uint32),
+        ("array_size", ctypes.c_uint32),
+        ("misc_flags2", ctypes.c_uint32)
     ]
 
     def Print(self):
-        print(f"dxgiFormat: {DXGI_FORMAT(self.dxgiFormat).name}")
-        print(f"resourceDimension: {self.resourceDimension}")
-        print(f"miscFlag: {self.miscFlag}")
-        print(f"arraySize: {self.arraySize}")
-        print(f"miscFlags2: {self.miscFlags2}")
+        print(f"dxgi_format: {DXGI_FORMAT(self.dxgi_format).name}")
+        print(f"resource_dimension: {D3D10_RESOURCE_DIMENSION(self.resource_dimension).name}")
+        print(f"misc_flag: {self.misc_flag}")
+        print(f"array_size: {self.array_size}")
+        print(f"misc_flags2: {self.misc_flags2}")
 
 assert ctypes.sizeof(PIXELFORMAT) == 32, "DDS pixel format size mismatch"
 assert ctypes.sizeof(DDS_HEADER) == 124, "DDS Header size mismatch"
@@ -295,7 +428,7 @@ class DDSTexture:
         assert unpack("I", first_dword)[0] == DDS_MAGIC, "Invalid DDS file"
         self.header         = self.buf_ref.read_ctype(DDS_HEADER)
         # print("--- ", self.buf_ref.offset)
-        self.header.Print()
+        # self.header.Print()
         assert self.header.size == 124, "Only DDS_HEADER size 124 is supported"
         assert self.header.ddspf.size == 32, "Only DDS_PIXELFORMAT size 32 is supported"
 
@@ -304,4 +437,4 @@ class DDSTexture:
         self.dx10_header = self.buf_ref.read_ctype(DDS_HEADER_DXT10)
         # print("--- ", self.buf_ref.offset)
 
-        self.dx10_header.Print()
+        # self.dx10_header.Print()

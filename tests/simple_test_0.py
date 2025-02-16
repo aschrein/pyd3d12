@@ -195,15 +195,15 @@ cmd_list.ResourceBarrier([
         Transition = native.D3D12_RESOURCE_TRANSITION_BARRIER(
             Resource = uav_buffer,
             Subresource = 0,
-            StateBefore = native.D3D12_RESOURCE_STATES.UNORDERED_ACCESS,
+            StateBefore = native.D3D12_RESOURCE_STATES.COMMON,
             StateAfter = native.D3D12_RESOURCE_STATES.COPY_SOURCE
         )
     )
 ])
 
 cmd_list.CopyBufferRegion(
-    DestBuffer = buffer,
-    DestOffset = 0,
+    DstBuffer = buffer,
+    DstOffset = 0,
     SrcBuffer = uav_buffer,
     SrcOffset = 0,
     NumBytes = 1024

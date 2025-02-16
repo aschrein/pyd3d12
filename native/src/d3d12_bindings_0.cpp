@@ -121,35 +121,26 @@ public:
 
     std::string GetISA() {
         // https://github.com/baldurk/renderdoc/blob/2ace1fe84d62e2b2b5fdd25894dc3186864ee8fe/util/test/demos/dx/official/d3dcommon.h#L1041
-#undef DEFINE_GUID
+#undef __DEFINE_GUID
 #define __DEFINE_GUID(name, l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8) static const GUID name = { l, w1, w2, {b1, b2, b3, b4, b5, b6, b7, b8} }
         __DEFINE_GUID(WKPDID_CommentStringW, 0xd0149dc0, 0x90e8, 0x4ec8, 0x81, 0x44, 0xe9, 0x00, 0xad, 0x26, 0x6b, 0xb2);
-#undef DEFINE_GUID
+#undef __DEFINE_GUID
         // https://github.com/baldurk/renderdoc/blob/ca4d79c0a34f4186e8a6ec39a0c9568b5c920ed8/renderdoc/driver/d3d12/d3d12_replay.cpp#L624
         UINT size = UINT(0);
         pipelineState->GetPrivateData(WKPDID_CommentStringW, &size, NULL);
-
         std::string isa = {};
-
         if (size != UINT(0)) {
-
             byte *data = new byte[size + UINT(1)];
-
             memset(data, UINT(0), size);
-
             pipelineState->GetPrivateData(WKPDID_CommentStringW, &size, data);
-
             char const *iter       = (char const *)data;
             char const *cdata_iter = strstr(iter, "![CDATA[");
-
             if (cdata_iter) {
                 iter                     = cdata_iter + strlen("![CDATA[");
                 char const *comment_iter = strstr(iter, "]]></comment>");
-
                 if (comment_iter) {
                     isa = std::string(iter, size_t(comment_iter - iter));
                 }
-
             } else {
                 // Failed to find the right section
             }
@@ -262,6 +253,33 @@ public:
         D3D12_RESOURCE_DESC1 desc = resource2->GetDesc1();
         return desc;
     }
+    void SetName(std::wstring Name) { resource2->SetName(Name.c_str()); }
+};
+
+class D3D12_TEXTURE_COPY_LOCATION_WRAPPER {
+public:
+    std::shared_ptr<ID3D12ResourceWrapper> Resource = {};
+    D3D12_TEXTURE_COPY_TYPE                Type     = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT     PlacedFootprint;
+    UINT                                   SubresourceIndex;
+
+public:
+    D3D12_TEXTURE_COPY_LOCATION_WRAPPER(std::shared_ptr<ID3D12ResourceWrapper> Resource, D3D12_PLACED_SUBRESOURCE_FOOTPRINT PlacedFootprint)
+        : Resource(Resource), Type(D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT), PlacedFootprint(PlacedFootprint) {}
+    D3D12_TEXTURE_COPY_LOCATION_WRAPPER(std::shared_ptr<ID3D12ResourceWrapper> Resource, UINT SubresourceIndex)
+        : Resource(Resource), Type(D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX), SubresourceIndex(SubresourceIndex) {}
+
+    D3D12_TEXTURE_COPY_LOCATION ToNative() {
+        D3D12_TEXTURE_COPY_LOCATION location = {};
+        location.pResource                   = Resource->resource;
+        location.Type                        = Type;
+        if (Type == D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT) {
+            location.PlacedFootprint = PlacedFootprint;
+        } else {
+            location.SubresourceIndex = SubresourceIndex;
+        }
+        return location;
+    }
 };
 
 class ID3D12GraphicsCommandListWrapper {
@@ -363,6 +381,10 @@ public:
     void CopyBufferRegion(std::shared_ptr<ID3D12ResourceWrapper> pDstBuffer, UINT64 DstOffset, std::shared_ptr<ID3D12ResourceWrapper> pSrcBuffer, UINT64 SrcOffset,
                           UINT64 NumBytes) {
         commandList->CopyBufferRegion(pDstBuffer->resource, DstOffset, pSrcBuffer->resource, SrcOffset, NumBytes);
+    }
+    void CopyTextureRegion(std::shared_ptr<D3D12_TEXTURE_COPY_LOCATION_WRAPPER> Dst, UINT DstX, UINT DstY, UINT DstZ, std::shared_ptr<D3D12_TEXTURE_COPY_LOCATION_WRAPPER> Src,
+                           std::optional<D3D12_BOX> SrcBox) {
+        commandList->CopyTextureRegion(&Dst->ToNative(), DstX, DstY, DstZ, &Src->ToNative(), SrcBox ? &SrcBox.value() : nullptr);
     }
     void ResourceBarrier(std::vector<D3D12_RESOURCE_BARRIER> pBarriers) {
         UINT NumBarriers = (UINT)pBarriers.size();
@@ -816,6 +838,14 @@ public:
     }
 };
 
+class CopyableFootprints {
+public:
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts;
+    std::vector<UINT>                               NumRows;
+    std::vector<UINT64>                             RowSizeInBytes;
+    std::vector<UINT64>                             TotalBytes;
+};
+
 class ID3D12DeviceWrapper {
 public:
     ID3D12Device * device  = nullptr;
@@ -850,6 +880,17 @@ public:
         if (device6) device6->Release();
         if (device7) device7->Release();
         if (device8) device8->Release();
+    }
+
+    std::shared_ptr<CopyableFootprints> GetCopyableFootprints(const D3D12_RESOURCE_DESC &resourceDesc, UINT firstSubresource, UINT NumSubresources, UINT64 BaseOffset) {
+        std::shared_ptr<CopyableFootprints> footprints = std::make_shared<CopyableFootprints>();
+        footprints->layouts.resize(NumSubresources);
+        footprints->NumRows.resize(NumSubresources);
+        footprints->RowSizeInBytes.resize(NumSubresources);
+        footprints->TotalBytes.resize(NumSubresources);
+        device->GetCopyableFootprints(&resourceDesc, firstSubresource, NumSubresources, BaseOffset, footprints->layouts.data(), footprints->NumRows.data(),
+                                      footprints->RowSizeInBytes.data(), footprints->TotalBytes.data());
+        return footprints;
     }
 
     std::shared_ptr<ID3D12ResourceWrapper> CreateCommittedResource(const D3D12_HEAP_PROPERTIES &heapProperties, D3D12_HEAP_FLAGS heapFlags, const D3D12_RESOURCE_DESC &resourceDesc,
@@ -952,10 +993,41 @@ static py::tuple GetWindowSize(uint64_t hwnd_int) {
 
 static bool _IsDebuggerPresent() { return ::IsDebuggerPresent(); }
 
+class ID3D12SDKConfigurationWrapper {
+public:
+    ID3D12SDKConfiguration *sdkConfiguration = nullptr;
+
+public:
+    ID3D12SDKConfigurationWrapper() {
+#undef __DEFINE_GUID
+#define __DEFINE_GUID(name, l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8) static const GUID name = { l, w1, w2, {b1, b2, b3, b4, b5, b6, b7, b8} }
+        __DEFINE_GUID(CLSID_D3D12SDKConfiguration, 0x7cda6aca, 0xa03e, 0x49c8, 0x94, 0x58, 0x03, 0x34, 0xd2, 0x0e, 0x07, 0xce);
+#undef __DEFINE_GUID
+
+        HMODULE d3d12 = GetModuleHandleA("d3d12.dll");
+        ASSERT_PANIC(NULL != d3d12);
+        auto D3D12GetInterfacePfn = (PFN_D3D12_GET_INTERFACE)GetProcAddress(d3d12, "D3D12GetInterface");
+        ASSERT_PANIC(NULL != D3D12GetInterfacePfn);
+        HRESULT hr = D3D12GetInterfacePfn(CLSID_D3D12SDKConfiguration, IID_PPV_ARGS(&sdkConfiguration));
+        ASSERT_HRESULT_PANIC(hr);
+    }
+    ~ID3D12SDKConfigurationWrapper() {
+        if (sdkConfiguration) sdkConfiguration->Release();
+    }
+    void SetSDKVersion(UINT SDKVersion, std::string SDKPath) {
+        HRESULT hr = sdkConfiguration->SetSDKVersion(SDKVersion, SDKPath.c_str());
+        ASSERT_HRESULT_PANIC(hr);
+    }
+};
+
 void export_d3d12_0(py::module &m) {
     m.def("square", &square);
     m.def("GetWindowSize", &GetWindowSize);
     m.def("IsDebuggerPresent", &_IsDebuggerPresent);
+
+    py::class_<ID3D12SDKConfigurationWrapper, std::shared_ptr<ID3D12SDKConfigurationWrapper>>(m, "ID3D12SDKConfiguration")
+        .def(py::init<>())
+        .def("SetSDKVersion", &ID3D12SDKConfigurationWrapper::SetSDKVersion);
 
     py::enum_<DXGI_SWAP_EFFECT>(m, "DXGI_SWAP_EFFECT")
         .value("DISCARD", DXGI_SWAP_EFFECT_DISCARD)
@@ -1513,6 +1585,7 @@ void export_d3d12_0(py::module &m) {
         .def("Map", &ID3D12ResourceWrapper::Map, "Subresource"_a = 0, "ReadRange"_a = std::optional<D3D12_RANGE>{std::nullopt})     //
         .def("Unmap", &ID3D12ResourceWrapper::Unmap, "Subresource"_a = 0, "ReadRange"_a = std::optional<D3D12_RANGE>{std::nullopt}) //
         .def("GetDesc", &ID3D12ResourceWrapper::GetDesc)                                                                            //
+        .def("SetName", &ID3D12ResourceWrapper::SetName)                                                                            //
         ;
 
     py::enum_<D3D12_COMMAND_LIST_TYPE>(m, "D3D12_COMMAND_LIST_TYPE")
@@ -1579,12 +1652,12 @@ void export_d3d12_0(py::module &m) {
 
     py::class_<D3D12_RESOURCE_TRANSITION_BARRIER>(m, "D3D12_RESOURCE_TRANSITION_BARRIER")                                                                           //
         .def(py::init())                                                                                                                                            //
-        .def(py::init([](std::shared_ptr<ID3D12ResourceWrapper> pResource, UINT Subresource, D3D12_RESOURCE_STATES StateBefore, D3D12_RESOURCE_STATES StateAfter) { //
+        .def(py::init([](std::shared_ptr<ID3D12ResourceWrapper> pResource, UINT Subresource, uint32_t StateBefore, uint32_t StateAfter) { //
                  D3D12_RESOURCE_TRANSITION_BARRIER barrier = {};
                  barrier.pResource                         = pResource->resource;
                  barrier.Subresource                       = Subresource;
-                 barrier.StateBefore                       = StateBefore;
-                 barrier.StateAfter                        = StateAfter;
+                 barrier.StateBefore                       = (D3D12_RESOURCE_STATES)StateBefore;
+                 barrier.StateAfter                        = (D3D12_RESOURCE_STATES)StateAfter;
                  return barrier;
              }),
              "Resource"_a, "Subresource"_a = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, "StateBefore"_a, "StateAfter"_a)
@@ -1727,6 +1800,17 @@ void export_d3d12_0(py::module &m) {
         .def_readwrite("Format", &D3D12_INDEX_BUFFER_VIEW::Format)                          //
         ;
 
+    // exprt D3D12_TEXTURE_COPY_LOCATION_WRAPPER
+    py::class_<D3D12_TEXTURE_COPY_LOCATION_WRAPPER, std::shared_ptr<D3D12_TEXTURE_COPY_LOCATION_WRAPPER>>(m, "D3D12_TEXTURE_COPY_LOCATION") //
+        .def(py::init([](std::shared_ptr<ID3D12ResourceWrapper> Resource, uint32_t SubresourceIndex) { return D3D12_TEXTURE_COPY_LOCATION_WRAPPER(Resource, SubresourceIndex); }),
+             "Resource"_a, "SubresourceIndex"_a = 0) //
+        .def(py::init([](std::shared_ptr<ID3D12ResourceWrapper> Resource, D3D12_PLACED_SUBRESOURCE_FOOTPRINT PlacedFootprint) {
+                 return D3D12_TEXTURE_COPY_LOCATION_WRAPPER(Resource, PlacedFootprint);
+             }),
+             "Resource"_a, "PlacedFootprint"_a) //
+
+        ;
+
     // !COMMAND LIST
 
     py::class_<ID3D12GraphicsCommandListWrapper, std::shared_ptr<ID3D12GraphicsCommandListWrapper>>(m, "ID3D12GraphicsCommandList")                              //
@@ -1737,12 +1821,13 @@ void export_d3d12_0(py::module &m) {
         .def("SetComputeRootSignature", &ID3D12GraphicsCommandListWrapper::SetComputeRootSignature, "RootSignature"_a)                                           //
         .def("SetComputeRoot32BitConstant", &ID3D12GraphicsCommandListWrapper::SetComputeRoot32BitConstant, "RootParameterIndex"_a, "SrcData"_a, "DestOffset"_a) //
         .def("SetComputeRoot32BitConstants", &ID3D12GraphicsCommandListWrapper::SetComputeRoot32BitConstants, "RootParameterIndex"_a, "Num32BitValuesToSet"_a, "SrcData"_a,
-             "DestOffsetIn32BitValues"_a)                                                                                                                                        //
+             "DestOffsetIn32BitValues"_a)                                                                                                                           //
         .def("SetComputeRootConstantBufferView", &ID3D12GraphicsCommandListWrapper::SetComputeRootConstantBufferView, "RootParameterIndex"_a, "BufferLocation"_a)   //
         .def("SetComputeRootShaderResourceView", &ID3D12GraphicsCommandListWrapper::SetComputeRootShaderResourceView, "RootParameterIndex"_a, "BufferLocation"_a)   //
         .def("SetComputeRootUnorderedAccessView", &ID3D12GraphicsCommandListWrapper::SetComputeRootUnorderedAccessView, "RootParameterIndex"_a, "BufferLocation"_a) //
         .def("Dispatch", &ID3D12GraphicsCommandListWrapper::Dispatch, "ThreadGroupCountX"_a, "ThreadGroupCountY"_a, "ThreadGroupCountZ"_a)                          //
-        .def("CopyBufferRegion", &ID3D12GraphicsCommandListWrapper::CopyBufferRegion, "DestBuffer"_a, "DestOffset"_a, "SrcBuffer"_a, "SrcOffset"_a, "NumBytes"_a)   //
+        .def("CopyBufferRegion", &ID3D12GraphicsCommandListWrapper::CopyBufferRegion, "DstBuffer"_a, "DstOffset"_a, "SrcBuffer"_a, "SrcOffset"_a, "NumBytes"_a)     //
+        .def("CopyTextureRegion", &ID3D12GraphicsCommandListWrapper::CopyTextureRegion, "Dst"_a, "DstX"_a, "DstY"_a, "DstZ"_a, "Src"_a, "SrcBox"_a)                 //
         .def("ResourceBarrier", &ID3D12GraphicsCommandListWrapper::ResourceBarrier, "Barriers"_a)                                                                   //
         .def("IASetVertexBuffers", &ID3D12GraphicsCommandListWrapper::IASetVertexBuffers, "StartSlot"_a, "Views"_a)                                                 //
         .def("IASetIndexBuffer", &ID3D12GraphicsCommandListWrapper::IASetIndexBuffer, "View"_a)                                                                     //
@@ -1752,7 +1837,7 @@ void export_d3d12_0(py::module &m) {
         .def("SetGraphicsRootSignature", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootSignature, "RootSignature"_a)                                           //
         .def("SetGraphicsRoot32BitConstant", &ID3D12GraphicsCommandListWrapper::SetGraphicsRoot32BitConstant, "RootParameterIndex"_a, "SrcData"_a, "DestOffset"_a) //
         .def("SetGraphicsRoot32BitConstants", &ID3D12GraphicsCommandListWrapper::SetGraphicsRoot32BitConstants, "RootParameterIndex"_a, "Num32BitValuesToSet"_a, "SrcData"_a,
-             "DestOffsetIn32BitValues"_a)                                                                                                                                          //
+             "DestOffsetIn32BitValues"_a)                                                                                                                             //
         .def("SetGraphicsRootConstantBufferView", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootConstantBufferView, "RootParameterIndex"_a, "BufferLocation"_a)   //
         .def("SetGraphicsRootShaderResourceView", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootShaderResourceView, "RootParameterIndex"_a, "BufferLocation"_a)   //
         .def("SetGraphicsRootUnorderedAccessView", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootUnorderedAccessView, "RootParameterIndex"_a, "BufferLocation"_a) //
@@ -1761,8 +1846,10 @@ void export_d3d12_0(py::module &m) {
         .def("RSSetViewports", &ID3D12GraphicsCommandListWrapper::RSSetViewports, "Viewports"_a)   //
         .def("RSSetScissorRects", &ID3D12GraphicsCommandListWrapper::RSSetScissorRects, "Rects"_a) //
         .def("OMSetRenderTargets", &ID3D12GraphicsCommandListWrapper::OMSetRenderTargets, "RenderTargetDescriptors"_a, "RTSingleHandleToDescriptorRange"_a = FALSE,
-             "DepthStencilDescriptor"_a = std::optional<D3D12_CPU_DESCRIPTOR_HANDLE>{})                                         //
-        .def("ClearRenderTargetView", &ID3D12GraphicsCommandListWrapper::ClearRenderTargetView, "View"_a, "Color"_a, "Rects"_a) //
+             "DepthStencilDescriptor"_a = std::optional<D3D12_CPU_DESCRIPTOR_HANDLE>{})                                                                       //
+        .def("ClearRenderTargetView", &ID3D12GraphicsCommandListWrapper::ClearRenderTargetView, "View"_a, "Color"_a, "Rects"_a)                               //
+        .def("SetDescriptorHeaps", &ID3D12GraphicsCommandListWrapper::SetDescriptorHeaps, "DescriptorHeaps"_a)                                                //
+        .def("SetGraphicsRootDescriptorTable", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootDescriptorTable, "RootParameterIndex"_a, "BaseDescriptor"_a) //
         ;
 
     py::enum_<D3D12_BLEND_OP>(m, "D3D12_BLEND_OP")
@@ -2276,14 +2363,254 @@ void export_d3d12_0(py::module &m) {
         .def_readwrite("ptr", &D3D12_CPU_DESCRIPTOR_HANDLE::ptr)                                     //
         ;
 
+    py::class_<D3D12_SUBRESOURCE_FOOTPRINT>(m, "D3D12_SUBRESOURCE_FOOTPRINT") //
+        .def(py::init())                                                      //
+        .def_readwrite("Format", &D3D12_SUBRESOURCE_FOOTPRINT::Format)        //
+        .def_readwrite("Width", &D3D12_SUBRESOURCE_FOOTPRINT::Width)          //
+        .def_readwrite("Height", &D3D12_SUBRESOURCE_FOOTPRINT::Height)        //
+        .def_readwrite("Depth", &D3D12_SUBRESOURCE_FOOTPRINT::Depth)          //
+        .def_readwrite("RowPitch", &D3D12_SUBRESOURCE_FOOTPRINT::RowPitch)    //
+        ;
+    py::class_<D3D12_PLACED_SUBRESOURCE_FOOTPRINT>(m, "D3D12_PLACED_SUBRESOURCE_FOOTPRINT") //
+        .def(py::init())                                                                    //
+        .def_readwrite("Offset", &D3D12_PLACED_SUBRESOURCE_FOOTPRINT::Offset)               //
+        .def_readwrite("Footprint", &D3D12_PLACED_SUBRESOURCE_FOOTPRINT::Footprint)         //
+        ;
     py::class_<ID3D12DescriptorHeapWrapper, std::shared_ptr<ID3D12DescriptorHeapWrapper>>(m, "ID3D12DescriptorHeap") //
         .def(py::init<ID3D12DescriptorHeap *>())                                                                     //
         .def("GetCPUDescriptorHandleForHeapStart", &ID3D12DescriptorHeapWrapper::GetCPUDescriptorHandleForHeapStart) //
         .def("GetGPUDescriptorHandleForHeapStart", &ID3D12DescriptorHeapWrapper::GetGPUDescriptorHandleForHeapStart) //                                                    //
         ;
+    py::class_<CopyableFootprints, std::shared_ptr<CopyableFootprints>>(m, "CopyableFootprints")
+        .def(py::init())                                                      //
+        .def_readwrite("Layouts", &CopyableFootprints::layouts)               //
+        .def_readwrite("NumRows", &CopyableFootprints::NumRows)               //
+        .def_readwrite("RowSizeInBytes", &CopyableFootprints::RowSizeInBytes) //
+        .def_readwrite("TotalBytes", &CopyableFootprints::TotalBytes)         //
+        ;
 
+    py::enum_<D3D12_BUFFER_SRV_FLAGS>(m, "D3D12_BUFFER_SRV_FLAGS", py::arithmetic()) //
+        .value("NONE", D3D12_BUFFER_SRV_FLAG_NONE)                                   //
+        .value("RAW", D3D12_BUFFER_SRV_FLAG_RAW)                                     //
+        .export_values();
+    py::class_<D3D12_BUFFER_SRV>(m, "D3D12_BUFFER_SRV") //
+        .def(py::init([](UINT64 FirstElement, UINT NumElements, UINT StructureByteStride, D3D12_BUFFER_SRV_FLAGS Flags) {
+                 D3D12_BUFFER_SRV desc    = {};
+                 desc.FirstElement        = FirstElement;
+                 desc.NumElements         = NumElements;
+                 desc.StructureByteStride = StructureByteStride;
+                 desc.Flags               = Flags;
+                 return desc;
+             }),
+             "FirstElement"_a = 0, "NumElements"_a = 1, "StructureByteStride"_a = 0, "Flags"_a = D3D12_BUFFER_SRV_FLAG_NONE) //
+        ;
+
+    py::class_<D3D12_TEX1D_SRV>(m, "D3D12_TEX1D_SRV") //
+        .def(py::init([](UINT MostDetailedMip, UINT MipLevels, FLOAT ResourceMinLODClamp) {
+                 D3D12_TEX1D_SRV desc     = {};
+                 desc.MostDetailedMip     = MostDetailedMip;
+                 desc.MipLevels           = MipLevels;
+                 desc.ResourceMinLODClamp = ResourceMinLODClamp;
+                 return desc;
+             }),
+             "MostDetailedMip"_a = 0, "MipLevels"_a = -1, "ResourceMinLODClamp"_a = 0.0f) //
+        ;
+    py::class_<D3D12_TEX1D_ARRAY_SRV>(m, "D3D12_TEX1D_ARRAY_SRV") //
+        .def(py::init([](UINT MostDetailedMip, UINT MipLevels, UINT FirstArraySlice, UINT ArraySize, FLOAT ResourceMinLODClamp) {
+                 D3D12_TEX1D_ARRAY_SRV desc = {};
+                 desc.MostDetailedMip       = MostDetailedMip;
+                 desc.MipLevels             = MipLevels;
+                 desc.FirstArraySlice       = FirstArraySlice;
+                 desc.ArraySize             = ArraySize;
+                 desc.ResourceMinLODClamp   = ResourceMinLODClamp;
+                 return desc;
+             }),
+             "MostDetailedMip"_a = 0, "MipLevels"_a = -1, "FirstArraySlice"_a = 0, "ArraySize"_a = 1, "ResourceMinLODClamp"_a = 0.0f) //
+        ;
+    py::class_<D3D12_TEX2D_SRV>(m, "D3D12_TEX2D_SRV") //
+        .def(py::init([](UINT MostDetailedMip, UINT MipLevels, UINT PlaneSlice, FLOAT ResourceMinLODClamp) {
+                 D3D12_TEX2D_SRV desc     = {};
+                 desc.MostDetailedMip     = MostDetailedMip;
+                 desc.MipLevels           = MipLevels;
+                 desc.PlaneSlice          = PlaneSlice;
+                 desc.ResourceMinLODClamp = ResourceMinLODClamp;
+                 return desc;
+             }),
+             "MostDetailedMip"_a = 0, "MipLevels"_a = -1, "PlaneSlice"_a = 0, "ResourceMinLODClamp"_a = 0.0f) //
+        ;
+    py::class_<D3D12_TEX2D_ARRAY_SRV>(m, "D3D12_TEX2D_ARRAY_SRV") //
+        .def(py::init([](UINT MostDetailedMip, UINT MipLevels, UINT FirstArraySlice, UINT ArraySize, UINT PlaneSlice, FLOAT ResourceMinLODClamp) {
+                 D3D12_TEX2D_ARRAY_SRV desc = {};
+                 desc.MostDetailedMip       = MostDetailedMip;
+                 desc.MipLevels             = MipLevels;
+                 desc.FirstArraySlice       = FirstArraySlice;
+                 desc.ArraySize             = ArraySize;
+                 desc.PlaneSlice            = PlaneSlice;
+                 desc.ResourceMinLODClamp   = ResourceMinLODClamp;
+                 return desc;
+             }),
+             "MostDetailedMip"_a = 0, "MipLevels"_a = -1, "FirstArraySlice"_a = 0, "ArraySize"_a = 1, "PlaneSlice"_a = 0, "ResourceMinLODClamp"_a = 0.0f) //
+        ;
+    py::class_<D3D12_TEX2DMS_SRV>(m, "D3D12_TEX2DMS_SRV") //
+        .def(py::init())                                  //
+        ;
+    py::class_<D3D12_TEX2DMS_ARRAY_SRV>(m, "D3D12_TEX2DMS_ARRAY_SRV") //
+        .def(py::init([](UINT FirstArraySlice, UINT ArraySize) {
+                 D3D12_TEX2DMS_ARRAY_SRV desc = {};
+                 desc.FirstArraySlice         = FirstArraySlice;
+                 desc.ArraySize               = ArraySize;
+                 return desc;
+             }),
+             "FirstArraySlice"_a = 0, "ArraySize"_a = 1) //
+        ;
+    py::class_<D3D12_TEX3D_SRV>(m, "D3D12_TEX3D_SRV") //
+        .def(py::init([](UINT MostDetailedMip, UINT MipLevels, FLOAT ResourceMinLODClamp) {
+                 D3D12_TEX3D_SRV desc     = {};
+                 desc.MostDetailedMip     = MostDetailedMip;
+                 desc.MipLevels           = MipLevels;
+                 desc.ResourceMinLODClamp = ResourceMinLODClamp;
+                 return desc;
+             }),
+             "MostDetailedMip"_a = 0, "MipLevels"_a = -1, "ResourceMinLODClamp"_a = 0.0f) //
+        ;
+    py::class_<D3D12_TEXCUBE_SRV>(m, "D3D12_TEXCUBE_SRV") //
+        .def(py::init([](UINT MostDetailedMip, UINT MipLevels, FLOAT ResourceMinLODClamp) {
+                 D3D12_TEXCUBE_SRV desc   = {};
+                 desc.MostDetailedMip     = MostDetailedMip;
+                 desc.MipLevels           = MipLevels;
+                 desc.ResourceMinLODClamp = ResourceMinLODClamp;
+                 return desc;
+             }),
+             "MostDetailedMip"_a = 0, "MipLevels"_a = -1, "ResourceMinLODClamp"_a = 0.0f) //
+        ;
+    py::class_<D3D12_TEXCUBE_ARRAY_SRV>(m, "D3D12_TEXCUBE_ARRAY_SRV") //
+        .def(py::init([](UINT MostDetailedMip, UINT MipLevels, UINT First2DArrayFace, UINT NumCubes, FLOAT ResourceMinLODClamp) {
+                 D3D12_TEXCUBE_ARRAY_SRV desc = {};
+                 desc.MostDetailedMip         = MostDetailedMip;
+                 desc.MipLevels               = MipLevels;
+                 desc.First2DArrayFace        = First2DArrayFace;
+                 desc.NumCubes                = NumCubes;
+                 desc.ResourceMinLODClamp     = ResourceMinLODClamp;
+                 return desc;
+             }),
+             "MostDetailedMip"_a = 0, "MipLevels"_a = -1, "First2DArrayFace"_a = 0, "NumCubes"_a = 1, "ResourceMinLODClamp"_a = 0.0f) //
+        ;
+    py::class_<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV>(m, "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV") //
+        .def(py::init([](D3D12_GPU_VIRTUAL_ADDRESS Location) {
+                 D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV desc = {};
+                 desc.Location                                    = Location;
+                 return desc;
+             }),
+             "Location"_a = 0) //
+        ;
+
+    m.attr("D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING") = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+
+    py::class_<D3D12_SHADER_RESOURCE_VIEW_DESC>(m, "D3D12_SHADER_RESOURCE_VIEW_DESC") //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_BUFFER_SRV Buffer) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_BUFFER;
+                 desc.Buffer                          = Buffer;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Buffer"_a = D3D12_BUFFER_SRV{}) //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX1D_SRV Texture1D) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURE1D;
+                 desc.Texture1D                       = Texture1D;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture1D"_a = D3D12_TEX1D_SRV{}) //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX1D_ARRAY_SRV Texture1DArray) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
+                 desc.Texture1DArray                  = Texture1DArray;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture1DArray"_a = D3D12_TEX1D_ARRAY_SRV{}) //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX2D_SRV Texture2D) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURE2D;
+                 desc.Texture2D                       = Texture2D;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture2D"_a = D3D12_TEX2D_SRV{}) //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX2D_ARRAY_SRV Texture2DArray) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                 desc.Texture2DArray                  = Texture2DArray;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture2DArray"_a = D3D12_TEX2D_ARRAY_SRV{}) //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX2DMS_SRV Texture2DMS) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                 desc.Texture2DMS                     = Texture2DMS;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture2DMS"_a = D3D12_TEX2DMS_SRV{}) //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX2DMS_ARRAY_SRV Texture2DMSArray) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+                 desc.Texture2DMSArray                = Texture2DMSArray;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture2DMSArray"_a = D3D12_TEX2DMS_ARRAY_SRV{}) //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX3D_SRV Texture3D) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURE3D;
+                 desc.Texture3D                       = Texture3D;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture3D"_a = D3D12_TEX3D_SRV{}) //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEXCUBE_SRV TextureCube) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                 desc.TextureCube                     = TextureCube;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "TextureCube"_a = D3D12_TEXCUBE_SRV{}) //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEXCUBE_ARRAY_SRV TextureCubeArray) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+                 desc.TextureCubeArray                = TextureCubeArray;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "TextureCubeArray"_a = D3D12_TEXCUBE_ARRAY_SRV{}) //
+        .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV RaytracingAccelerationStructure) {
+                 D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+                 desc.Format                          = Format;
+                 desc.Shader4ComponentMapping         = Shader4ComponentMapping;
+                 desc.ViewDimension                   = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+                 desc.RaytracingAccelerationStructure = RaytracingAccelerationStructure;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "RaytracingAccelerationStructure"_a = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV{}) //
+        ;
     py::class_<ID3D12DeviceWrapper, std::shared_ptr<ID3D12DeviceWrapper>>(m, "ID3D12Device")                                                                //
         .def(py::init<ID3D12Device *>())                                                                                                                    //
+        .def("GetCopyableFootprints", &ID3D12DeviceWrapper::GetCopyableFootprints,                                                                          //
+             "Resource"_a, "FirstSubresource"_a, "NumSubresources"_a, "BaseOffset"_a)                                                                       //
         .def("CreateCommittedResource", &ID3D12DeviceWrapper::CreateCommittedResource,                                                                      //
              "heapProperties"_a,                                                                                                                            //
              "heapFlags"_a,                                                                                                                                 //

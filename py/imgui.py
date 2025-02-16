@@ -29,6 +29,7 @@ import time
 import ctypes
 from .utils import *
 from .dxc import *
+from .d3d12 import *
 
 Im = find_native_module("imgui")
 native = find_native_module("native")
@@ -56,67 +57,18 @@ class ImGuiContext:
         self.vertex_buffer_cursor = 0
         self.index_buffer_size = 1 << 20
         self.index_buffer_cursor = 0
-        self.vertex_buffer = self.device.CreateCommittedResource(
-            heapProperties = native.D3D12_HEAP_PROPERTIES(
-                Type = native.D3D12_HEAP_TYPE.CUSTOM,
-                CPUPageProperty = native.D3D12_CPU_PAGE_PROPERTY.WRITE_COMBINE,
-                MemoryPoolPreference = native.D3D12_MEMORY_POOL.L0,
-                CreationNodeMask = 1,
-                VisibleNodeMask = 1
-            ),
-            heapFlags = native.D3D12_HEAP_FLAGS.NONE,
-            resourceDesc = native.D3D12_RESOURCE_DESC(
-                Dimension = native.D3D12_RESOURCE_DIMENSION.BUFFER,
-                Alignment = 0,
-                Width = self.vertex_buffer_size,
-                Height = 1,
-                DepthOrArraySize = 1,
-                MipLevels = 1,
-                Format = native.DXGI_FORMAT.UNKNOWN,
-                SampleDesc = native.DXGI_SAMPLE_DESC(
-                    Count = 1,
-                    Quality = 0
-                ),
-                Layout = native.D3D12_TEXTURE_LAYOUT.ROW_MAJOR,
-                Flags = native.D3D12_RESOURCE_FLAGS.NONE
-            ),
-            initialState = native.D3D12_RESOURCE_STATES.VERTEX_AND_CONSTANT_BUFFER,
-            optimizedClearValue = None
-        )
+        self.vertex_buffer = make_write_combined_buffer(device, self.vertex_buffer_size, native.D3D12_RESOURCE_STATES.VERTEX_AND_CONSTANT_BUFFER, name="Imgui Vertex Buffer")
+        self.index_buffer = make_write_combined_buffer(device, self.index_buffer_size, native.D3D12_RESOURCE_STATES.INDEX_BUFFER, name="Imgui Index Buffer")
         self.vertex_buffer_map = self.vertex_buffer.Map()
-        self.index_buffer = self.device.CreateCommittedResource(
-            heapProperties = native.D3D12_HEAP_PROPERTIES(
-                Type = native.D3D12_HEAP_TYPE.CUSTOM,
-                CPUPageProperty = native.D3D12_CPU_PAGE_PROPERTY.WRITE_COMBINE,
-                MemoryPoolPreference = native.D3D12_MEMORY_POOL.L0,
-                CreationNodeMask = 1,
-                VisibleNodeMask = 1
-            ),
-            heapFlags = native.D3D12_HEAP_FLAGS.NONE,
-            resourceDesc = native.D3D12_RESOURCE_DESC(
-                Dimension = native.D3D12_RESOURCE_DIMENSION.BUFFER,
-                Alignment = 0,
-                Width = self.vertex_buffer_size,
-                Height = 1,
-                DepthOrArraySize = 1,
-                MipLevels = 1,
-                Format = native.DXGI_FORMAT.UNKNOWN,
-                SampleDesc = native.DXGI_SAMPLE_DESC(
-                    Count = 1,
-                    Quality = 0
-                ),
-                Layout = native.D3D12_TEXTURE_LAYOUT.ROW_MAJOR,
-                Flags = native.D3D12_RESOURCE_FLAGS.NONE
-            ),
-            initialState = native.D3D12_RESOURCE_STATES.INDEX_BUFFER,
-            optimizedClearValue = None
-        )
         self.index_buffer_map = self.index_buffer.Map()
 
         self.dxc_ctx = DXCContext()
         triangle_shader_text = """
 //js
             #define ROOT_SIGNATURE_MACRO \
+            "DescriptorTable("                                          \
+            "SRV(t0, numDescriptors=1, flags = DESCRIPTORS_VOLATILE)" \
+            ")," \
             "RootConstants(b0, num32BitConstants = 32), " \
             "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), " \
             "StaticSampler(s0, " \
@@ -124,9 +76,7 @@ class ImGuiContext:
                 "AddressU = TEXTURE_ADDRESS_CLAMP, " \
                 "AddressV = TEXTURE_ADDRESS_CLAMP, " \
                 "AddressW = TEXTURE_ADDRESS_CLAMP), " \
-            "DescriptorTable("                                          \
-            "SRV(t0, numDescriptors=1, flags = DESCRIPTORS_VOLATILE)" \
-            ")" \
+           
 
 
             struct VSInput {
@@ -159,7 +109,7 @@ class ImGuiContext:
             }
             [RootSignature(ROOT_SIGNATURE_MACRO)]
             float4 PSMain(PSInput input) : SV_TARGET {
-                return input.color;
+                return input.color * t0.Sample(s0, input.uv);
             }
 //!js
 """
@@ -197,13 +147,13 @@ class ImGuiContext:
                     IndependentBlendEnable = False,
                     RenderTarget = [
                         native.D3D12_RENDER_TARGET_BLEND_DESC(
-                            BlendEnable = False,
+                            BlendEnable = True,
                             LogicOpEnable = False,
-                            SrcBlend = native.D3D12_BLEND.ONE,
-                            DestBlend = native.D3D12_BLEND.ZERO,
+                            SrcBlend = native.D3D12_BLEND.SRC_ALPHA,
+                            DestBlend = native.D3D12_BLEND.INV_SRC_ALPHA,
                             BlendOp = native.D3D12_BLEND_OP.ADD,
-                            SrcBlendAlpha = native.D3D12_BLEND.ONE,
-                            DestBlendAlpha = native.D3D12_BLEND.ZERO,
+                            SrcBlendAlpha = native.D3D12_BLEND.SRC_ALPHA,
+                            DestBlendAlpha = native.D3D12_BLEND.INV_SRC_ALPHA,
                             BlendOpAlpha = native.D3D12_BLEND_OP.ADD,
                             LogicOp = native.D3D12_LOGIC_OP.NOOP,
                             RenderTargetWriteMask = native.D3D12_COLOR_WRITE_ENABLE.ALL
@@ -272,6 +222,32 @@ class ImGuiContext:
         )
         assert self.triangle_pipeline_state is not None
 
+        font_width      = self.ctx.GetFontTextureWidth()
+        font_height     = self.ctx.GetFontTextureHeight()
+        nparr           = np.random.rand(1, font_height, font_width, 4).astype(np.uint8)
+        ctypes.memmove(nparr.ctypes.data, self.ctx.GetFontTexturePtr(), nparr.nbytes)
+        self.texture    = make_texture_from_numpy_array_NHWC(self.device, nparr)
+
+        self.cbv_srv_uav_heap = CBV_SRV_UAV_DescriptorHeap(self.device, 1024)
+
+        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
+
+        self.device.CreateShaderResourceView(
+            Resource = self.texture,
+            Desc = native.D3D12_SHADER_RESOURCE_VIEW_DESC(
+                Format = self.texture.GetDesc().Format,
+                Shader4ComponentMapping = native.D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                Texture2D = native.D3D12_TEX2D_SRV(
+                    MipLevels = self.texture.GetDesc().MipLevels,
+                    MostDetailedMip = 0,
+                    PlaneSlice = 0,
+                    ResourceMinLODClamp = 0.0
+                )
+            ),
+            DestDescriptor = cpu_handle
+        )
+        self.texture_gpu_descritpor = gpu_handle
+
 
     def set_ctx(self):
         Im.SetCurrentContext(self.ctx)
@@ -287,7 +263,7 @@ class ImGuiContext:
 
         cmd_list.SetPipelineState(self.triangle_pipeline_state)
         cmd_list.SetGraphicsRootSignature(self.triangle_root_signature)
-   
+        cmd_list.SetDescriptorHeaps([self.cbv_srv_uav_heap.heap])
 
         im_cmd_lists = draw_list.CmdLists
         for i in range(draw_list.CmdListsCount):
@@ -321,7 +297,11 @@ class ImGuiContext:
                         Format = native.DXGI_FORMAT.R16_UINT
                     )
                 )
-                 
+                
+                cmd_list.SetGraphicsRootDescriptorTable(
+                    RootParameterIndex = 0,
+                    BaseDescriptor = self.texture_gpu_descritpor
+                )
                 cmd_list.IASetPrimitiveTopology(native.D3D12_PRIMITIVE_TOPOLOGY.TRIANGLELIST)
                 pc = RootConstants()
                 pc.scale[0] = 2.0 / draw_list.DisplaySize.x
@@ -329,7 +309,7 @@ class ImGuiContext:
                 pc.translate[0] = -1.0 - draw_list.DisplayPos.x * pc.scale[0]
                 pc.translate[1] = 1.0 - draw_list.DisplayPos.y * pc.scale[1]
                 cmd_list.SetGraphicsRoot32BitConstants(
-                    RootParameterIndex = 0,
+                    RootParameterIndex = 1,
                     Num32BitValuesToSet = 4,
                     SrcData = ctypes.addressof(pc),
                     DestOffsetIn32BitValues = 0

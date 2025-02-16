@@ -21,7 +21,7 @@
 # SOFTWARE.
 
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt, QObject, QTimer, QEvent
 import os, sys
 from py.utils import *
 from py.dxc import *
@@ -31,10 +31,11 @@ import argparse
 args = argparse.ArgumentParser()
 args.add_argument("--build", type=str, default="Release")
 args.add_argument("--wait_for_debugger_present", action="store_true")
+args.add_argument("--load_rdoc", action="store_true")
 args = args.parse_args()
 set_build_type(args.build)
 
-native = find_native_module("native")
+from py.d3d12 import *
 
 if args.wait_for_debugger_present:
     print("Waiting for debugger to attach...")
@@ -44,8 +45,9 @@ if args.wait_for_debugger_present:
 from py.imgui import *
 from py.rdoc import *
 
-if find_rdoc() is not None:
-    rdoc_load()
+if args.load_rdoc:
+    if find_rdoc() is not None:
+        rdoc_load()
 
 class Vertex(ctypes.Structure):
     _fields_ = [
@@ -53,13 +55,53 @@ class Vertex(ctypes.Structure):
         ("color", ctypes.c_float * 4)
     ]
 
+class ChildWidget(qtw.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("child_widget")
+        self.setStyleSheet("background-color: lightgray;")  # for visibility
+
+    def mouseMoveEvent(self, event):
+        print("Child widget mouse move:", event.pos())
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            print("Child widget left button pressed at:", event.pos())
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            print("Child widget left button released at:", event.pos())
+        super().mouseReleaseEvent(event)
+
+    def enterEvent(self, event):
+        print("Mouse entered the child widget")
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        print("Mouse left the child widget")
+        super().leaveEvent(event)
+    
+    def keyPressEvent(self, event):
+        print("Key pressed:", event.key())
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        print("Key released:", event.key())
+        super().keyReleaseEvent(event)
+
 class MainWindow:
     def __init__(self):
         self.window = qtw.QMainWindow()
+        self.child = ChildWidget(self.window)
+        self.window.setCentralWidget(self.child)
+        self.child.setGeometry(50, 50, 300, 200)
+
         self.window.setWindowTitle("Simple Window")
         self.window.setGeometry(100, 100, 800, 600)
         self.window.show()
-        self.hwnd = int(self.window.winId())
+        self.hwnd = int(self.child.winId())
 
         windth, height = native.GetWindowSize(self.hwnd)
 
@@ -121,7 +163,14 @@ class MainWindow:
         triangle_shader_text = """
 //js
             #define ROOT_SIGNATURE_MACRO \
-            "RootConstants(b0, num32BitConstants = 1), " \
+            "DescriptorTable(" \
+            "SRV(t0, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE) " \
+            "), " \
+            "StaticSampler(s0, " \
+                "Filter = FILTER_MIN_MAG_MIP_LINEAR, " \
+                "AddressU = TEXTURE_ADDRESS_WRAP, " \
+                "AddressV = TEXTURE_ADDRESS_WRAP, " \
+                "AddressW = TEXTURE_ADDRESS_WRAP), " \
             "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), " \
 
             struct VSInput {
@@ -132,6 +181,10 @@ class MainWindow:
                 float4 position : SV_POSITION;
                 float4 color : COLOR;
             };
+
+            Texture2D<float4> t0 : register(t0);
+            SamplerState s0 : register(s0);
+
             [RootSignature(ROOT_SIGNATURE_MACRO)]
             PSInput VSMain(VSInput input) {
                 PSInput output;
@@ -141,7 +194,9 @@ class MainWindow:
             }
             [RootSignature(ROOT_SIGNATURE_MACRO)]
             float4 PSMain(PSInput input) : SV_TARGET {
-                return input.color;
+                return pow(t0.SampleLevel(s0, input.color.xy, 0.0), float(1.0 / 2.0));
+                // return t0[abs(input.color.xy) * 512];
+                // return input.color;
             }
 //!js
 """
@@ -163,7 +218,7 @@ class MainWindow:
                 PS = native.D3D12_SHADER_BYTECODE(self.triangle_pixel_shader),
                 RasterizerState = native.D3D12_RASTERIZER_DESC(
                     FillMode = native.D3D12_FILL_MODE.SOLID,
-                    CullMode = native.D3D12_CULL_MODE.BACK,
+                    CullMode = native.D3D12_CULL_MODE.NONE,
                     FrontCounterClockwise = False,
                     DepthBias = 0,
                     DepthBiasClamp = 0.0,
@@ -179,13 +234,13 @@ class MainWindow:
                     IndependentBlendEnable = False,
                     RenderTarget = [
                         native.D3D12_RENDER_TARGET_BLEND_DESC(
-                            BlendEnable = False,
+                            BlendEnable = True,
                             LogicOpEnable = False,
-                            SrcBlend = native.D3D12_BLEND.ONE,
-                            DestBlend = native.D3D12_BLEND.ZERO,
+                            SrcBlend = native.D3D12_BLEND.SRC_ALPHA,
+                            DestBlend = native.D3D12_BLEND.INV_SRC_ALPHA,
                             BlendOp = native.D3D12_BLEND_OP.ADD,
-                            SrcBlendAlpha = native.D3D12_BLEND.ONE,
-                            DestBlendAlpha = native.D3D12_BLEND.ZERO,
+                            SrcBlendAlpha = native.D3D12_BLEND.SRC_ALPHA,
+                            DestBlendAlpha = native.D3D12_BLEND.INV_SRC_ALPHA,
                             BlendOpAlpha = native.D3D12_BLEND_OP.ADD,
                             LogicOp = native.D3D12_LOGIC_OP.NOOP,
                             RenderTargetWriteMask = native.D3D12_COLOR_WRITE_ENABLE.ALL
@@ -246,42 +301,16 @@ class MainWindow:
         assert self.triangle_pso is not None
 
        
-        self.triangle_vertex_buffer = self.device.CreateCommittedResource(
-            heapProperties = native.D3D12_HEAP_PROPERTIES(
-                Type = native.D3D12_HEAP_TYPE.CUSTOM,
-                CPUPageProperty = native.D3D12_CPU_PAGE_PROPERTY.WRITE_COMBINE,
-                MemoryPoolPreference = native.D3D12_MEMORY_POOL.L0,
-                CreationNodeMask = 1,
-                VisibleNodeMask = 1
-            ),
-            heapFlags = native.D3D12_HEAP_FLAGS.NONE,
-            resourceDesc = native.D3D12_RESOURCE_DESC(
-                Dimension = native.D3D12_RESOURCE_DIMENSION.BUFFER,
-                Alignment = 0,
-                Width = ctypes.sizeof(Vertex) * 3,
-                Height = 1,
-                DepthOrArraySize = 1,
-                MipLevels = 1,
-                Format = native.DXGI_FORMAT.UNKNOWN,
-                SampleDesc = native.DXGI_SAMPLE_DESC(
-                    Count = 1,
-                    Quality = 0
-                ),
-                Layout = native.D3D12_TEXTURE_LAYOUT.ROW_MAJOR,
-                Flags = native.D3D12_RESOURCE_FLAGS.NONE
-            ),
-            initialState = native.D3D12_RESOURCE_STATES.VERTEX_AND_CONSTANT_BUFFER,
-            optimizedClearValue = None
-        )
+        self.triangle_vertex_buffer = make_write_combined_buffer(self.device, size=ctypes.sizeof(Vertex) * 3, state=native.D3D12_RESOURCE_STATES.VERTEX_AND_CONSTANT_BUFFER, name="Triangle Vertex Buffer")
 
         mapped_ptr = self.triangle_vertex_buffer.Map()
         array = (Vertex * 3).from_address(mapped_ptr)
-        array[0].position = (0.0, 0.5, 0.0)
-        array[0].color = (1.0, 0.0, 0.0, 1.0)
-        array[1].position = (0.5, -0.5, 0.0)
-        array[1].color = (0.0, 1.0, 0.0, 1.0)
-        array[2].position = (-0.5, -0.5, 0.0)
-        array[2].color = (0.0, 0.0, 1.0, 1.0)
+        array[0].position       = (-1.0, -1.0, 0.0)
+        array[0].color          = (0.0, 2.0, 0.0, 1.0)
+        array[1].position       = (-1.0, 3.0, 0.0)
+        array[1].color          = (0.0, .0, 0.0, 1.0)
+        array[2].position       = (3.0, -1.0, 0.0)
+        array[2].color          = (2.0, 2.0, 1.0, 1.0)
         self.triangle_vertex_buffer.Unmap()
 
         self.rtv_descritor_heap = self.device.CreateDescriptorHeap(
@@ -293,6 +322,34 @@ class MainWindow:
             )
         )
         self.rtv_descriptor_size = self.device.GetDescriptorHandleIncrementSize(native.D3D12_DESCRIPTOR_HEAP_TYPE.RTV)
+
+        asset_folder = find_file_or_folder("assets")
+        assert asset_folder is not None
+
+        dds_file = DDSTexture(asset_folder / "mandrill.dds")
+
+        self.texture = make_texture_from_dds(self.device, dds_file)
+
+        self.cbv_srv_uav_heap = CBV_SRV_UAV_DescriptorHeap(self.device, 1024)
+
+        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
+
+        self.device.CreateShaderResourceView(
+            Resource = self.texture,
+            Desc = native.D3D12_SHADER_RESOURCE_VIEW_DESC(
+                Format = self.texture.GetDesc().Format,
+                Shader4ComponentMapping = native.D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                Texture2D = native.D3D12_TEX2D_SRV(
+                    MipLevels = self.texture.GetDesc().MipLevels,
+                    MostDetailedMip = 0,
+                    PlaneSlice = 0,
+                    ResourceMinLODClamp = 0.0
+                )
+            ),
+            DestDescriptor = cpu_handle
+        )
+        self.texture_gpu_descritpor = gpu_handle
+
 
         self.render_timer = QTimer()
         self.render_timer.timeout.connect(self.on_frame)
@@ -306,6 +363,7 @@ class MainWindow:
 
         self.imgui_ctx.set_ctx()
         Im.NewFrame()
+        Im.SetNextWindowSize(Im.Vec2(200, 100))
         Im.Begin("Hello, world!")
         Im.End()
        
@@ -391,11 +449,14 @@ class MainWindow:
         ])
         cmd_list.OMSetRenderTargets(RenderTargetDescriptors=[native.D3D12_CPU_DESCRIPTOR_HANDLE(rtv_heap_offset_cpu)])
         cmd_list.ClearRenderTargetView(View=native.D3D12_CPU_DESCRIPTOR_HANDLE(rtv_heap_offset_cpu), Color=(0.5, 0.5, 0.5, 1.0), Rects=None)
-        self.imgui_ctx.render(cmd_list)
         
         cmd_list.SetPipelineState(self.triangle_pso)
         cmd_list.SetGraphicsRootSignature(self.triangle_root_signature)
-   
+        cmd_list.SetDescriptorHeaps([self.cbv_srv_uav_heap.heap])
+        cmd_list.SetGraphicsRootDescriptorTable(
+            RootParameterIndex = 0,
+            BaseDescriptor = self.texture_gpu_descritpor
+        )
         cmd_list.IASetVertexBuffers(
             StartSlot = 0,
             Views = [
@@ -409,7 +470,8 @@ class MainWindow:
         cmd_list.IASetPrimitiveTopology(native.D3D12_PRIMITIVE_TOPOLOGY.TRIANGLELIST)
         cmd_list.DrawInstanced(3, 1, 0, 0)
 
-        
+        self.imgui_ctx.render(cmd_list)
+
         cmd_list.ResourceBarrier([
             native.D3D12_RESOURCE_BARRIER(
                 Transition = native.D3D12_RESOURCE_TRANSITION_BARRIER(

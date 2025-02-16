@@ -20,48 +20,31 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-
 import os, sys
-from pathlib import Path
-from .utils import *
+from py.dds import *
+from py.utils import *
+from py.d3d12 import *
+from py.rdoc import *
 
-rdoc = find_native_module("rdoc")
+launch_debugviewpp()
 
-def find_rdoc():
-    try_path = "C:\\Program Files\\RenderDoc"
-    if os.path.exists(try_path):
-        print("RenderDoc found at: " + try_path)
-        return Path(try_path) / "renderdoc.dll"
-    
-    return None
+bin_folder                  = get_bin_folder()
+agility_sdk_folder          = bin_folder / "Microsoft.Direct3D.D3D12.1.615.0\\build\\native\\bin\\x64"
+agility_sdk_version         = 615
+exe_rel_agility_sdk_folder  = os.path.relpath(agility_sdk_folder, sys.executable)
+d3d_config                  = native.ID3D12SDKConfiguration()
+d3d_config.SetSDKVersion(agility_sdk_version, exe_rel_agility_sdk_folder)
 
-ctx = None
+debug = native.ID3D12Debug()
+debug.EnableDebugLayer()
+factory = native.IDXGIFactory()
+adapters = factory.EnumAdapters()
+device = native.CreateDevice(adapters[0], native.D3D_FEATURE_LEVEL._11_0)
 
-def rdoc_is_valid():
-    return ctx is not None and ctx.IsValid()
+asset_folder = find_file_or_folder("assets")
+assert asset_folder is not None
 
-def rdoc_load():
-    global ctx
-    rdoc_path = find_rdoc()
-    if rdoc_path is None:
-        print("RenderDoc not found.")
-        return False
-    # dll_load_path = str(rdoc_path.parent)
-    # print("Adding DLL directory: " + dll_load_path)
-    # os.add_dll_directory(dll_load_path)
+dds_file = DDSTexture(asset_folder / "mandrill.dds")
+texture = make_texture_from_dds(device, dds_file)
 
-    ctx = rdoc.CreateContext(str(rdoc_path))
-    assert ctx.IsValid()
-
-    ctx.SetCaptureFilePathTemplate(str(get_or_create_tmp_folder() / "capture.rdc"))
-
-
-def rdoc_start_capture():
-    assert ctx is not None
-    ctx.StartCapture()
-    print("Started capture.")
-
-def rdoc_end_capture():
-    assert ctx is not None
-    ctx.EndCapture()
-    print("Ended capture.")
+print(CONSOLE_COLOR_GREEN + "SUCCESS" + CONSOLE_COLOR_END)
