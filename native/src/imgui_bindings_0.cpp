@@ -62,8 +62,10 @@ public:
         GetClientRect(hwnd, &rect);
         io.DisplaySize             = ImVec2((float)(rect.right - rect.left), (float)(rect.bottom - rect.top));
         io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
-        io.MouseDrawCursor         = true;
-        unsigned char *out_pixels  = {};
+        // io.MouseDrawCursor         = true;
+        unsigned char *out_pixels = {};
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
 
         io.Fonts->GetTexDataAsRGBA32(&out_pixels, &font_width, &font_height, &font_bytes_per_pixel);
         font_pixels.resize(font_width * font_height * font_bytes_per_pixel);
@@ -86,6 +88,41 @@ public:
             ctx = nullptr;
         }
         hwnd = {};
+    }
+    void SetDisplaySize(int width, int height) {
+        ImGui::SetCurrentContext(ctx);
+        auto &io       = ImGui::GetIO();
+        io.DisplaySize = ImVec2((float)width, (float)height);
+    }
+    void OnMouseMotion(int x, int y) {
+        ImGui::SetCurrentContext(ctx);
+        auto &io = ImGui::GetIO();
+        io.AddMousePosEvent((float)x, (float)y);
+    }
+    void OnMousePress(int button) {
+        ImGui::SetCurrentContext(ctx);
+        auto &io = ImGui::GetIO();
+        io.AddMouseButtonEvent(button, true);
+    }
+    void OnMouseRelease(int button) {
+        ImGui::SetCurrentContext(ctx);
+        auto &io = ImGui::GetIO();
+        io.AddMouseButtonEvent(button, false);
+    }
+    void OnMouseScroll(float x, float y) {
+        ImGui::SetCurrentContext(ctx);
+        auto &io = ImGui::GetIO();
+        io.AddMouseWheelEvent((float)x, (float)y);
+    }
+    void OnKeyPress(int key) {
+        ImGui::SetCurrentContext(ctx);
+        auto &io = ImGui::GetIO();
+        io.AddKeyEvent((ImGuiKey)key, true);
+    }
+    void OnKeyRelease(int key) {
+        ImGui::SetCurrentContext(ctx);
+        auto &io = ImGui::GetIO();
+        io.AddKeyEvent((ImGuiKey)key, false);
     }
 };
 
@@ -152,6 +189,13 @@ void export_imgui_0(py::module &m) {
         .def("GetFontTextureHeight", &ContextWrapper::GetFontTextureHeight)               //
         .def("GetFontTextureBytesPerPixel", &ContextWrapper::GetFontTextureBytesPerPixel) //
         .def("Destroy", &ContextWrapper::Destroy)                                         //
+        .def("OnMouseMotion", &ContextWrapper::OnMouseMotion, "x"_a, "y"_a)               //
+        .def("OnMousePress", &ContextWrapper::OnMousePress, "button"_a)                   //
+        .def("OnMouseRelease", &ContextWrapper::OnMouseRelease, "button"_a)               //
+        .def("OnMouseScroll", &ContextWrapper::OnMouseScroll, "x"_a, "y"_a)               //
+        .def("OnKeyPress", &ContextWrapper::OnKeyPress, "key"_a)                          //
+        .def("OnKeyRelease", &ContextWrapper::OnKeyRelease, "key"_a)                      //
+        .def("SetDisplaySize", &ContextWrapper::SetDisplaySize, "width"_a, "height"_a)    //
         ;
 
     enum _ImGuiWindowFlags {
@@ -187,9 +231,252 @@ void export_imgui_0(py::module &m) {
         _ImGuiWindowFlags_ChildMenu                 = 1 << 28
     };
 
+    enum _ImGuiKey {
+        _ImGuiKey_Tab            = ImGuiKey_Tab, // == ImGuiKey_NamedKey_BEGIN
+        _ImGuiKey_LeftArrow      = ImGuiKey_LeftArrow,
+        _ImGuiKey_RightArrow     = ImGuiKey_RightArrow,
+        _ImGuiKey_UpArrow        = ImGuiKey_UpArrow,
+        _ImGuiKey_DownArrow      = ImGuiKey_DownArrow,
+        _ImGuiKey_PageUp         = ImGuiKey_PageUp,
+        _ImGuiKey_PageDown       = ImGuiKey_PageDown,
+        _ImGuiKey_Home           = ImGuiKey_Home,
+        _ImGuiKey_End            = ImGuiKey_End,
+        _ImGuiKey_Insert         = ImGuiKey_Insert,
+        _ImGuiKey_Delete         = ImGuiKey_Delete,
+        _ImGuiKey_Backspace      = ImGuiKey_Backspace,
+        _ImGuiKey_Space          = ImGuiKey_Space,
+        _ImGuiKey_Enter          = ImGuiKey_Enter,
+        _ImGuiKey_Escape         = ImGuiKey_Escape,
+        _ImGuiKey_LeftCtrl       = ImGuiKey_LeftCtrl,
+        _ImGuiKey_LeftShift      = ImGuiKey_LeftShift,
+        _ImGuiKey_LeftAlt        = ImGuiKey_LeftAlt,
+        _ImGuiKey_LeftSuper      = ImGuiKey_LeftSuper,
+        _ImGuiKey_RightCtrl      = ImGuiKey_RightCtrl,
+        _ImGuiKey_RightShift     = ImGuiKey_RightShift,
+        _ImGuiKey_RightAlt       = ImGuiKey_RightAlt,
+        _ImGuiKey_RightSuper     = ImGuiKey_RightSuper,
+        _ImGuiKey_Menu           = ImGuiKey_Menu,
+        _ImGuiKey_0              = ImGuiKey_0,
+        _ImGuiKey_1              = ImGuiKey_1,
+        _ImGuiKey_2              = ImGuiKey_2,
+        _ImGuiKey_3              = ImGuiKey_3,
+        _ImGuiKey_4              = ImGuiKey_4,
+        _ImGuiKey_5              = ImGuiKey_5,
+        _ImGuiKey_6              = ImGuiKey_6,
+        _ImGuiKey_7              = ImGuiKey_7,
+        _ImGuiKey_8              = ImGuiKey_8,
+        _ImGuiKey_9              = ImGuiKey_9,
+        _ImGuiKey_A              = ImGuiKey_A,
+        _ImGuiKey_B              = ImGuiKey_B,
+        _ImGuiKey_C              = ImGuiKey_C,
+        _ImGuiKey_D              = ImGuiKey_D,
+        _ImGuiKey_E              = ImGuiKey_E,
+        _ImGuiKey_F              = ImGuiKey_F,
+        _ImGuiKey_G              = ImGuiKey_G,
+        _ImGuiKey_H              = ImGuiKey_H,
+        _ImGuiKey_I              = ImGuiKey_I,
+        _ImGuiKey_J              = ImGuiKey_J,
+        _ImGuiKey_K              = ImGuiKey_K,
+        _ImGuiKey_L              = ImGuiKey_L,
+        _ImGuiKey_M              = ImGuiKey_M,
+        _ImGuiKey_N              = ImGuiKey_N,
+        _ImGuiKey_O              = ImGuiKey_O,
+        _ImGuiKey_P              = ImGuiKey_P,
+        _ImGuiKey_Q              = ImGuiKey_Q,
+        _ImGuiKey_R              = ImGuiKey_R,
+        _ImGuiKey_S              = ImGuiKey_S,
+        _ImGuiKey_T              = ImGuiKey_T,
+        _ImGuiKey_U              = ImGuiKey_U,
+        _ImGuiKey_V              = ImGuiKey_V,
+        _ImGuiKey_W              = ImGuiKey_W,
+        _ImGuiKey_X              = ImGuiKey_X,
+        _ImGuiKey_Y              = ImGuiKey_Y,
+        _ImGuiKey_Z              = ImGuiKey_Z,
+        _ImGuiKey_F1             = ImGuiKey_F1,
+        _ImGuiKey_F2             = ImGuiKey_F2,
+        _ImGuiKey_F3             = ImGuiKey_F3,
+        _ImGuiKey_F4             = ImGuiKey_F4,
+        _ImGuiKey_F5             = ImGuiKey_F5,
+        _ImGuiKey_F6             = ImGuiKey_F6,
+        _ImGuiKey_F7             = ImGuiKey_F7,
+        _ImGuiKey_F8             = ImGuiKey_F8,
+        _ImGuiKey_F9             = ImGuiKey_F9,
+        _ImGuiKey_F10            = ImGuiKey_F10,
+        _ImGuiKey_F11            = ImGuiKey_F11,
+        _ImGuiKey_F12            = ImGuiKey_F12,
+        _ImGuiKey_F13            = ImGuiKey_F13,
+        _ImGuiKey_F14            = ImGuiKey_F14,
+        _ImGuiKey_F15            = ImGuiKey_F15,
+        _ImGuiKey_F16            = ImGuiKey_F16,
+        _ImGuiKey_F17            = ImGuiKey_F17,
+        _ImGuiKey_F18            = ImGuiKey_F18,
+        _ImGuiKey_F19            = ImGuiKey_F19,
+        _ImGuiKey_F20            = ImGuiKey_F20,
+        _ImGuiKey_F21            = ImGuiKey_F21,
+        _ImGuiKey_F22            = ImGuiKey_F22,
+        _ImGuiKey_F23            = ImGuiKey_F23,
+        _ImGuiKey_F24            = ImGuiKey_F24,
+        _ImGuiKey_Apostrophe     = ImGuiKey_Apostrophe,   // '
+        _ImGuiKey_Comma          = ImGuiKey_Comma,        // ,
+        _ImGuiKey_Minus          = ImGuiKey_Minus,        // -
+        _ImGuiKey_Period         = ImGuiKey_Period,       // .
+        _ImGuiKey_Slash          = ImGuiKey_Slash,        // /
+        _ImGuiKey_Semicolon      = ImGuiKey_Semicolon,    // ;
+        _ImGuiKey_Equal          = ImGuiKey_Equal,        // =
+        _ImGuiKey_LeftBracket    = ImGuiKey_LeftBracket,  // [
+        _ImGuiKey_Backslash      = ImGuiKey_Backslash,    // \ (this text inhibit multiline comment caused by backslash)
+        _ImGuiKey_RightBracket   = ImGuiKey_RightBracket, // ]
+        _ImGuiKey_GraveAccent    = ImGuiKey_GraveAccent,  // `
+        _ImGuiKey_CapsLock       = ImGuiKey_CapsLock,
+        _ImGuiKey_ScrollLock     = ImGuiKey_ScrollLock,
+        _ImGuiKey_NumLock        = ImGuiKey_NumLock,
+        _ImGuiKey_PrintScreen    = ImGuiKey_PrintScreen,
+        _ImGuiKey_Pause          = ImGuiKey_Pause,
+        _ImGuiKey_Keypad0        = ImGuiKey_Keypad0,
+        _ImGuiKey_Keypad1        = ImGuiKey_Keypad1,
+        _ImGuiKey_Keypad2        = ImGuiKey_Keypad2,
+        _ImGuiKey_Keypad3        = ImGuiKey_Keypad3,
+        _ImGuiKey_Keypad4        = ImGuiKey_Keypad4,
+        _ImGuiKey_Keypad5        = ImGuiKey_Keypad5,
+        _ImGuiKey_Keypad6        = ImGuiKey_Keypad6,
+        _ImGuiKey_Keypad7        = ImGuiKey_Keypad7,
+        _ImGuiKey_Keypad8        = ImGuiKey_Keypad8,
+        _ImGuiKey_Keypad9        = ImGuiKey_Keypad9,
+        _ImGuiKey_KeypadDecimal  = ImGuiKey_KeypadDecimal,
+        _ImGuiKey_KeypadDivide   = ImGuiKey_KeypadDivide,
+        _ImGuiKey_KeypadMultiply = ImGuiKey_KeypadMultiply,
+        _ImGuiKey_KeypadSubtract = ImGuiKey_KeypadSubtract,
+        _ImGuiKey_KeypadAdd      = ImGuiKey_KeypadAdd,
+        _ImGuiKey_KeypadEnter    = ImGuiKey_KeypadEnter,
+        _ImGuiKey_KeypadEqual    = ImGuiKey_KeypadEqual,
+        _ImGuiKey_AppBack        = ImGuiKey_AppBack, // Available on some keyboard/mouses. Often referred as "Browser Back"
+        _ImGuiKey_AppForward     = ImGuiKey_AppForward,
+    };
+
+    py::enum_<_ImGuiKey>(m, "Key", py::arithmetic())
+        .value("Tab", _ImGuiKey_Tab)
+        .value("LeftArrow", _ImGuiKey_LeftArrow)
+        .value("RightArrow", _ImGuiKey_RightArrow)
+        .value("UpArrow", _ImGuiKey_UpArrow)
+        .value("DownArrow", _ImGuiKey_DownArrow)
+        .value("PageUp", _ImGuiKey_PageUp)
+        .value("PageDown", _ImGuiKey_PageDown)
+        .value("Home", _ImGuiKey_Home)
+        .value("End", _ImGuiKey_End)
+        .value("Insert", _ImGuiKey_Insert)
+        .value("Delete", _ImGuiKey_Delete)
+        .value("Backspace", _ImGuiKey_Backspace)
+        .value("Space", _ImGuiKey_Space)
+        .value("Enter", _ImGuiKey_Enter)
+        .value("Escape", _ImGuiKey_Escape)
+        .value("LeftCtrl", _ImGuiKey_LeftCtrl)
+        .value("LeftShift", _ImGuiKey_LeftShift)
+        .value("LeftAlt", _ImGuiKey_LeftAlt)
+        .value("LeftSuper", _ImGuiKey_LeftSuper)
+        .value("RightCtrl", _ImGuiKey_RightCtrl)
+        .value("RightShift", _ImGuiKey_RightShift)
+        .value("RightAlt", _ImGuiKey_RightAlt)
+        .value("RightSuper", _ImGuiKey_RightSuper)
+        .value("Menu", _ImGuiKey_Menu)
+        .value("_0", _ImGuiKey_0)
+        .value("_1", _ImGuiKey_1)
+        .value("_2", _ImGuiKey_2)
+        .value("_3", _ImGuiKey_3)
+        .value("_4", _ImGuiKey_4)
+        .value("_5", _ImGuiKey_5)
+        .value("_6", _ImGuiKey_6)
+        .value("_7", _ImGuiKey_7)
+        .value("_8", _ImGuiKey_8)
+        .value("_9", _ImGuiKey_9)
+        .value("A", _ImGuiKey_A)
+        .value("B", _ImGuiKey_B)
+        .value("C", _ImGuiKey_C)
+        .value("D", _ImGuiKey_D)
+        .value("E", _ImGuiKey_E)
+        .value("F", _ImGuiKey_F)
+        .value("G", _ImGuiKey_G)
+        .value("H", _ImGuiKey_H)
+        .value("I", _ImGuiKey_I)
+        .value("J", _ImGuiKey_J)
+        .value("K", _ImGuiKey_K)
+        .value("L", _ImGuiKey_L)
+        .value("M", _ImGuiKey_M)
+        .value("N", _ImGuiKey_N)
+        .value("O", _ImGuiKey_O)
+        .value("P", _ImGuiKey_P)
+        .value("Q", _ImGuiKey_Q)
+        .value("R", _ImGuiKey_R)
+        .value("S", _ImGuiKey_S)
+        .value("T", _ImGuiKey_T)
+        .value("U", _ImGuiKey_U)
+        .value("V", _ImGuiKey_V)
+        .value("W", _ImGuiKey_W)
+        .value("X", _ImGuiKey_X)
+        .value("Y", _ImGuiKey_Y)
+        .value("Z", _ImGuiKey_Z)
+        .value("F1", _ImGuiKey_F1)
+        .value("F2", _ImGuiKey_F2)
+        .value("F3", _ImGuiKey_F3)
+        .value("F4", _ImGuiKey_F4)
+        .value("F5", _ImGuiKey_F5)
+        .value("F6", _ImGuiKey_F6)
+        .value("F7", _ImGuiKey_F7)
+        .value("F8", _ImGuiKey_F8)
+        .value("F9", _ImGuiKey_F9)
+        .value("F10", _ImGuiKey_F10)
+        .value("F11", _ImGuiKey_F11)
+        .value("F12", _ImGuiKey_F12)
+        .value("F13", _ImGuiKey_F13)
+        .value("F14", _ImGuiKey_F14)
+        .value("F15", _ImGuiKey_F15)
+        .value("F16", _ImGuiKey_F16)
+        .value("F17", _ImGuiKey_F17)
+        .value("F18", _ImGuiKey_F18)
+        .value("F19", _ImGuiKey_F19)
+        .value("F20", _ImGuiKey_F20)
+        .value("F21", _ImGuiKey_F21)
+        .value("F22", _ImGuiKey_F22)
+        .value("F23", _ImGuiKey_F23)
+        .value("F24", _ImGuiKey_F24)
+        .value("Apostrophe", _ImGuiKey_Apostrophe)
+        .value("Comma", _ImGuiKey_Comma)
+        .value("Minus", _ImGuiKey_Minus)
+        .value("Period", _ImGuiKey_Period)
+        .value("Slash", _ImGuiKey_Slash)
+        .value("Semicolon", _ImGuiKey_Semicolon)
+        .value("Equal", _ImGuiKey_Equal)
+        .value("LeftBracket", _ImGuiKey_LeftBracket)
+        .value("Backslash", _ImGuiKey_Backslash)
+        .value("RightBracket", _ImGuiKey_RightBracket)
+        .value("GraveAccent", _ImGuiKey_GraveAccent)
+        .value("CapsLock", _ImGuiKey_CapsLock)
+        .value("ScrollLock", _ImGuiKey_ScrollLock)
+        .value("NumLock", _ImGuiKey_NumLock)
+        .value("PrintScreen", _ImGuiKey_PrintScreen)
+        .value("Pause", _ImGuiKey_Pause)
+        .value("Keypad0", _ImGuiKey_Keypad0)
+        .value("Keypad1", _ImGuiKey_Keypad1)
+        .value("Keypad2", _ImGuiKey_Keypad2)
+        .value("Keypad3", _ImGuiKey_Keypad3)
+        .value("Keypad4", _ImGuiKey_Keypad4)
+        .value("Keypad5", _ImGuiKey_Keypad5)
+        .value("Keypad6", _ImGuiKey_Keypad6)
+        .value("Keypad7", _ImGuiKey_Keypad7)
+        .value("Keypad8", _ImGuiKey_Keypad8)
+        .value("Keypad9", _ImGuiKey_Keypad9)
+        .value("KeypadDecimal", _ImGuiKey_KeypadDecimal)
+        .value("KeypadDivide", _ImGuiKey_KeypadDivide)
+        .value("KeypadMultiply", _ImGuiKey_KeypadMultiply)
+        .value("KeypadSubtract", _ImGuiKey_KeypadSubtract)
+        .value("KeypadAdd", _ImGuiKey_KeypadAdd)
+        .value("KeypadEnter", _ImGuiKey_KeypadEnter)
+        .value("KeypadEqual", _ImGuiKey_KeypadEqual)
+        .value("AppBack", _ImGuiKey_AppBack)
+        .value("AppForward", _ImGuiKey_AppForward);
+
     enum _ImGuiCond { _ImGuiCond_None = 0, _ImGuiCond_Always = 1 << 0, _ImGuiCond_Once = 1 << 1, _ImGuiCond_FirstUse = 1 << 2, _ImGuiCond_Appearing = 1 << 3 };
 
-    py::enum_<_ImGuiCond>(m, "ImGuiCond", py::arithmetic())
+    py::enum_<_ImGuiCond>(m, "Cond", py::arithmetic())
         .value("None", _ImGuiCond_None)
         .value("Always", _ImGuiCond_Always)
         .value("Once", _ImGuiCond_Once)

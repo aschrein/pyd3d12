@@ -60,35 +60,51 @@ class ChildWidget(qtw.QWidget):
         super().__init__(parent)
         self.setObjectName("child_widget")
         self.setStyleSheet("background-color: lightgray;")  # for visibility
+        self.imgui_ctx = None # set later
 
     def mouseMoveEvent(self, event):
-        print("Child widget mouse move:", event.pos())
+        # print("Child widget mouse move:", event.pos())
+        self.imgui_ctx.ctx.OnMouseMotion(event.pos().x(), event.pos().y())
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            print("Child widget left button pressed at:", event.pos())
+        # if event.button() == Qt.LeftButton:
+        #     print("Child widget left button pressed at:", event.pos())
+        key = 0
+        if event.button() == Qt.LeftButton: key = 0
+        if event.button() == Qt.RightButton: key = 1
+        if event.button() == Qt.MiddleButton: key = 2
+
+        self.imgui_ctx.ctx.OnMouseMotion(event.pos().x(), event.pos().y())
+        self.imgui_ctx.ctx.OnMousePress(key)
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            print("Child widget left button released at:", event.pos())
+        # if event.button() == Qt.LeftButton:
+        #     print("Child widget left button released at:", event.pos())
+        key = 0
+        if event.button() == Qt.LeftButton: key = 0
+        if event.button() == Qt.RightButton: key = 1
+        if event.button() == Qt.MiddleButton: key = 2
+
+        self.imgui_ctx.ctx.OnMouseMotion(event.pos().x(), event.pos().y())
+        self.imgui_ctx.ctx.OnMouseRelease(key)
         super().mouseReleaseEvent(event)
 
     def enterEvent(self, event):
-        print("Mouse entered the child widget")
+        # print("Mouse entered the child widget")
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        print("Mouse left the child widget")
+        # print("Mouse left the child widget")
         super().leaveEvent(event)
     
     def keyPressEvent(self, event):
-        print("Key pressed:", event.key())
+        # print("Key pressed:", event.key())
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
-        print("Key released:", event.key())
+        # print("Key released:", event.key())
         super().keyReleaseEvent(event)
 
 class MainWindow:
@@ -111,6 +127,7 @@ class MainWindow:
         self.factory = factory
         self.device = native.CreateDevice(adapters[0], native.D3D_FEATURE_LEVEL._11_0)
         self.imgui_ctx = ImGuiContext(self.device, self.hwnd)
+        self.child.imgui_ctx = self.imgui_ctx
 
         self.command_queue = self.device.CreateCommandQueue(native.D3D12_COMMAND_QUEUE_DESC(
             Type = native.D3D12_COMMAND_LIST_TYPE.DIRECT,
@@ -126,7 +143,7 @@ class MainWindow:
                     Width = windth,
                     Height = height,
                     RefreshRate = native.DXGI_RATIONAL(
-                        Numerator = 60,
+                        Numerator = 0,
                         Denominator = 1
                     ),
                     Format = native.DXGI_FORMAT.R8G8B8A8_UNORM,
@@ -360,11 +377,14 @@ class MainWindow:
     def on_frame(self):
 
         # !Imgui
-
+        window_width, window_height = native.GetWindowSize(self.hwnd)
         self.imgui_ctx.set_ctx()
+        self.imgui_ctx.ctx.SetDisplaySize(window_width, window_height)
         Im.NewFrame()
-        Im.SetNextWindowSize(Im.Vec2(200, 100))
+        # Im.SetNextWindowSize(Im.Vec2(200, 100))
         Im.Begin("Hello, world!")
+        Im.End()
+        Im.Begin("Second Window!")
         Im.End()
        
         back_buffer_idx = self.swapchain.GetCurrentBackBufferIndex()
@@ -374,7 +394,7 @@ class MainWindow:
         self.events[back_buffer_idx].Wait()
         self.events[back_buffer_idx].Reset()
 
-        window_width, window_height = native.GetWindowSize(self.hwnd)
+        
         back_buffer = self.swapchain.GetBuffer(back_buffer_idx)
         desc = back_buffer.GetDesc()
         if desc.Width != window_width or desc.Height != window_height:

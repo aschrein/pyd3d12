@@ -274,29 +274,35 @@ class ImGuiContext:
             vtx_buf_ptr = imcmd_list.VtxBufferPtr
             vtx_buf_siz = imcmd_list.VtxBufferSize
 
-            ctypes.memmove(self.vertex_buffer_map, vtx_buf_ptr, vtx_buf_siz)
-            ctypes.memmove(self.index_buffer_map, idx_buf_ptr, idx_buf_siz)
+            ctypes.memmove(self.vertex_buffer_map + self.vertex_buffer_cursor, vtx_buf_ptr, vtx_buf_siz)
+            ctypes.memmove(self.index_buffer_map + self.index_buffer_cursor, idx_buf_ptr, idx_buf_siz)
+
+            cmd_list.IASetVertexBuffers(
+                    StartSlot = 0,
+                    Views = [
+                        native.D3D12_VERTEX_BUFFER_VIEW(
+                            BufferLocation = self.vertex_buffer.GetGPUVirtualAddress() + self.vertex_buffer_cursor,
+                            SizeInBytes = vtx_buf_siz,
+                            StrideInBytes = ctypes.sizeof(ImVertex)
+                        )
+                    ]
+            )
+            cmd_list.IASetIndexBuffer(native.D3D12_INDEX_BUFFER_VIEW(
+                    BufferLocation = self.index_buffer.GetGPUVirtualAddress() + self.index_buffer_cursor,
+                    SizeInBytes = idx_buf_siz,
+                    Format = native.DXGI_FORMAT.R16_UINT
+                )
+            )
+
+            self.vertex_buffer_cursor = (self.vertex_buffer_cursor + vtx_buf_siz) % self.vertex_buffer_size
+            self.index_buffer_cursor = (self.index_buffer_cursor + idx_buf_siz) % self.index_buffer_size
+
+
 
             # print(f"len(cmd_buf): {len(cmd_buf)}")
             for cmd in cmd_buf:
                 # print(f"cmd.ClipRect {cmd.ClipRect.x}, {cmd.ClipRect.y}, {cmd.ClipRect.z}, {cmd.ClipRect.w}")
                 # print(f"cmd.ElemCount: {cmd.ElemCount}")
-                cmd_list.IASetVertexBuffers(
-                    StartSlot = 0,
-                    Views = [
-                        native.D3D12_VERTEX_BUFFER_VIEW(
-                            BufferLocation = self.vertex_buffer.GetGPUVirtualAddress(),
-                            SizeInBytes = vtx_buf_siz,
-                            StrideInBytes = ctypes.sizeof(ImVertex)
-                        )
-                    ]
-                )
-                cmd_list.IASetIndexBuffer(native.D3D12_INDEX_BUFFER_VIEW(
-                        BufferLocation = self.index_buffer.GetGPUVirtualAddress(),
-                        SizeInBytes = idx_buf_siz,
-                        Format = native.DXGI_FORMAT.R16_UINT
-                    )
-                )
                 
                 cmd_list.SetGraphicsRootDescriptorTable(
                     RootParameterIndex = 0,
@@ -304,10 +310,12 @@ class ImGuiContext:
                 )
                 cmd_list.IASetPrimitiveTopology(native.D3D12_PRIMITIVE_TOPOLOGY.TRIANGLELIST)
                 pc = RootConstants()
-                pc.scale[0] = 2.0 / draw_list.DisplaySize.x
-                pc.scale[1] = -2.0 / draw_list.DisplaySize.y
-                pc.translate[0] = -1.0 - draw_list.DisplayPos.x * pc.scale[0]
-                pc.translate[1] = 1.0 - draw_list.DisplayPos.y * pc.scale[1]
+                pc.scale[0]         = 2.0 / draw_list.DisplaySize.x
+                pc.scale[1]         = -2.0 / draw_list.DisplaySize.y
+                pc.translate[0]     = -1.0 - draw_list.DisplayPos.x * pc.scale[0]
+                pc.translate[1]     = 1.0 - draw_list.DisplayPos.y * pc.scale[1]
+                
+
                 cmd_list.SetGraphicsRoot32BitConstants(
                     RootParameterIndex = 1,
                     Num32BitValuesToSet = 4,
