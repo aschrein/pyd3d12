@@ -83,7 +83,8 @@
         "xtree": "cpp",
         "xutility": "cpp",
         "fstream": "cpp",
-        "random": "cpp"
+        "random": "cpp",
+        "bitset": "cpp"
     },
     "terminal.integrated.profiles.windows": {
         "StartBatProfile": {

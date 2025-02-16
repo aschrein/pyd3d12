@@ -28,9 +28,8 @@ _add_module(native
     src/d3d12_bindings_0.cpp
 )
 
-_add_module(rdoc
-    src/rdoc.cpp
-)
+_add_module(rdoc src/rdoc.cpp)
+_add_module(pix src/pix.cpp)
 
 _add_module(imgui
     src/imgui_bindings_0.cpp

@@ -27,11 +27,18 @@ from .utils import *
 
 rdoc = find_native_module("rdoc")
 
+rdoc_path = None
+
 def find_rdoc():
+    global rdoc_path
+    if rdoc_path is not None:
+        return rdoc_path
+    
     try_path = "C:\\Program Files\\RenderDoc"
     if os.path.exists(try_path):
         print("RenderDoc found at: " + try_path)
-        return Path(try_path) / "renderdoc.dll"
+        rdoc_path = Path(try_path) / "renderdoc.dll"
+        return rdoc_path
     
     return None
 
@@ -57,11 +64,17 @@ def rdoc_load():
 
 
 def rdoc_start_capture():
+    if not rdoc_is_valid():
+        print("RenderDoc not loaded.")
+        return
     assert ctx is not None
     ctx.StartCapture()
     print("Started capture.")
 
 def rdoc_end_capture():
+    if not rdoc_is_valid():
+        print("RenderDoc not loaded.")
+        return
     assert ctx is not None
     ctx.EndCapture()
     print("Ended capture.")

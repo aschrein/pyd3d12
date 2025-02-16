@@ -22,6 +22,7 @@
 
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QObject, QTimer, QEvent
+from PyQt5.QtGui import QSurfaceFormat
 import os, sys
 from py.utils import *
 from py.dxc import *
@@ -367,14 +368,20 @@ class MainWindow:
         )
         self.texture_gpu_descritpor = gpu_handle
 
+        self.last_time = time.time()
 
         self.render_timer = QTimer()
         self.render_timer.timeout.connect(self.on_frame)
-        self.render_timer.start(4)
+        self.render_timer.start(0)
 
         pass
 
     def on_frame(self):
+
+        self.cur_time = time.time()
+        dt = self.cur_time - self.last_time
+        self.last_time = self.cur_time
+        # print(f"dt = {dt}")
 
         # !Imgui
         window_width, window_height = native.GetWindowSize(self.hwnd)
@@ -391,8 +398,11 @@ class MainWindow:
         # print(f"back_buffer_idx = {back_buffer_idx}")
         # if self.fences[back_buffer_idx].GetCompletedValue() != 1:
         #     # print(f"Waiting for fence {back_buffer_idx}")
+
+        # !Wait for fence
         self.events[back_buffer_idx].Wait()
         self.events[back_buffer_idx].Reset()
+        self.fences[back_buffer_idx].Signal(0)
 
         
         back_buffer = self.swapchain.GetBuffer(back_buffer_idx)
@@ -508,12 +518,11 @@ class MainWindow:
 
         # print(f"self.fences[back_buffer_idx].GetCompletedValue() {self.fences[back_buffer_idx].GetCompletedValue()}")
         # assert self.fences[back_buffer_idx].GetCompletedValue() == 1
-        self.fences[back_buffer_idx].Signal(0)
-
-        self.swapchain.Present(0, 0)
-
+        
         self.command_queue.Signal(self.fences[back_buffer_idx], 1)
         self.fences[back_buffer_idx].SetEventOnCompletion(1, self.events[back_buffer_idx])
+
+        self.swapchain.Present(0, 0)
 
         # print(f"Frame: {self.frame_idx}")
         self.frame_idx = self.frame_idx + 1
@@ -525,6 +534,10 @@ launch_debugviewpp()
 
 debug = native.ID3D12Debug()
 debug.EnableDebugLayer()
+
+fmt = QSurfaceFormat()
+fmt.setSwapInterval(0)
+QSurfaceFormat.setDefaultFormat(fmt)
 
 app = qtw.QApplication([])
 window = MainWindow()

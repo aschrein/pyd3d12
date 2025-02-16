@@ -282,6 +282,79 @@ public:
     }
 };
 
+class D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper {
+public:
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE        Type          = {};
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS Flags         = {};
+    UINT                                                NumDescs      = {};
+    D3D12_ELEMENTS_LAYOUT                               DescsLayout   = {};
+    D3D12_GPU_VIRTUAL_ADDRESS                           InstanceDescs = {};
+    std::vector<D3D12_RAYTRACING_GEOMETRY_DESC>         GeometryDescs = {};
+
+public:
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS Flags, UINT NumDescs,
+                                                                 D3D12_GPU_VIRTUAL_ADDRESS InstanceDescs) {
+        Type                = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+        this->Flags         = Flags;
+        this->NumDescs      = NumDescs;
+        DescsLayout         = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        this->InstanceDescs = InstanceDescs;
+    }
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS Flags,
+                                                                 std::vector<D3D12_RAYTRACING_GEOMETRY_DESC>         GeometryDescs) {
+        Type                = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        this->Flags         = Flags;
+        DescsLayout         = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        this->GeometryDescs = GeometryDescs;
+    }
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper() = default;
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS ToNative() {
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS desc = {};
+        if (Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL) {
+            desc.Type          = Type;
+            desc.Flags         = Flags;
+            desc.NumDescs      = NumDescs;
+            desc.DescsLayout   = DescsLayout;
+            desc.InstanceDescs = InstanceDescs;
+        } else {
+            desc.Type           = Type;
+            desc.Flags          = Flags;
+            desc.NumDescs       = (UINT)GeometryDescs.size();
+            desc.DescsLayout    = DescsLayout;
+            desc.pGeometryDescs = GeometryDescs.data();
+        }
+        return desc;
+    }
+};
+class D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC_WRAPPER {
+public:
+    std::shared_ptr<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper> Inputs                           = {};
+    D3D12_GPU_VIRTUAL_ADDRESS                                                     SourceAccelerationStructureData  = {};
+    D3D12_GPU_VIRTUAL_ADDRESS                                                     DestAccelerationStructureData    = {};
+    D3D12_GPU_VIRTUAL_ADDRESS                                                     ScratchAccelerationStructureData = {};
+
+public:
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC_WRAPPER(std::shared_ptr<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper> Inputs,
+                                                               D3D12_GPU_VIRTUAL_ADDRESS SourceAccelerationStructureData, D3D12_GPU_VIRTUAL_ADDRESS DestAccelerationStructureData,
+                                                               D3D12_GPU_VIRTUAL_ADDRESS ScratchAccelerationStructureData) {
+        this->Inputs                           = Inputs;
+        this->SourceAccelerationStructureData  = SourceAccelerationStructureData;
+        this->DestAccelerationStructureData    = DestAccelerationStructureData;
+        this->ScratchAccelerationStructureData = ScratchAccelerationStructureData;
+    }
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC ToNative() {
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = {};
+        desc.Inputs                                             = Inputs->ToNative();
+        desc.SourceAccelerationStructureData                    = SourceAccelerationStructureData;
+        desc.DestAccelerationStructureData                      = DestAccelerationStructureData;
+        desc.ScratchAccelerationStructureData                   = ScratchAccelerationStructureData;
+        return desc;
+    }
+};
+
 class ID3D12GraphicsCommandListWrapper {
 public:
     ID3D12GraphicsCommandList * commandList  = nullptr;
@@ -344,6 +417,31 @@ public:
     void SetComputeRootSignature(std::shared_ptr<ID3D12RootSignatureWrapper> pRootSignature) { commandList->SetComputeRootSignature(pRootSignature->rootSignature); }
     void SetComputeRootDescriptorTable(UINT RootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) {
         commandList->SetComputeRootDescriptorTable(RootParameterIndex, BaseDescriptor);
+    }
+    void BuildRaytracingAccelerationStructure(std::shared_ptr<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC_WRAPPER>             Desc,
+                                              std::optional<std::vector<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC>> PostbuildInfoDescs) {
+        UINT32 NumPostbuildInfoDescs = PostbuildInfoDescs ? (UINT32)PostbuildInfoDescs.value().size() : 0;
+        ASSERT_PANIC(NumPostbuildInfoDescs <= 16);
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postbuildInfoDescs[16];
+        for (UINT32 i = 0; i < NumPostbuildInfoDescs; i++) {
+            postbuildInfoDescs[i] = PostbuildInfoDescs ? PostbuildInfoDescs.value()[i] : D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC();
+        }
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = Desc->ToNative();
+        commandList5->BuildRaytracingAccelerationStructure(&desc, NumPostbuildInfoDescs, postbuildInfoDescs);
+    }
+    void EmitRaytracingAccelerationStructurePostbuildInfo(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC Desc,
+                                                          std::vector<D3D12_GPU_VIRTUAL_ADDRESS>                      SourceAccelerationStructureData) {
+        UINT32 NumSourceAccelerationStructureData = (UINT32)SourceAccelerationStructureData.size();
+        ASSERT_PANIC(NumSourceAccelerationStructureData <= 16);
+        D3D12_GPU_VIRTUAL_ADDRESS sourceAccelerationStructureData[16];
+        for (UINT32 i = 0; i < NumSourceAccelerationStructureData; i++) {
+            sourceAccelerationStructureData[i] = SourceAccelerationStructureData[i];
+        }
+        commandList5->EmitRaytracingAccelerationStructurePostbuildInfo(&Desc, NumSourceAccelerationStructureData, sourceAccelerationStructureData);
+    }
+    void CopyRaytracingAccelerationStructure(D3D12_GPU_VIRTUAL_ADDRESS DestAccelerationStructureData, D3D12_GPU_VIRTUAL_ADDRESS SourceAccelerationStructureData,
+                                             D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE Mode) {
+        commandList5->CopyRaytracingAccelerationStructure(DestAccelerationStructureData, SourceAccelerationStructureData, Mode);
     }
     void SetGraphicsRootDescriptorTable(UINT RootParameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) {
         commandList->SetGraphicsRootDescriptorTable(RootParameterIndex, BaseDescriptor);
@@ -942,6 +1040,13 @@ public:
         ASSERT_HRESULT_PANIC(hr);
         return std::make_shared<ID3D12PipelineStateWrapper>(pipelineState);
     }
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO
+    GetRaytracingAccelerationStructurePrebuildInfo(std::shared_ptr<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper> Inputs) {
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS  desc = Inputs->ToNative();
+        device5->GetRaytracingAccelerationStructurePrebuildInfo(&desc, &info);
+        return info;
+    }
     std::shared_ptr<ID3D12CommandQueueWrapper> CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC &desc) {
         ID3D12CommandQueue *commandQueue = nullptr;
         HRESULT             hr           = device->CreateCommandQueue(&desc, IID_PPV_ARGS(&commandQueue));
@@ -1260,7 +1365,7 @@ void export_d3d12_0(py::module &m) {
     py::class_<DXGI_SWAP_CHAIN_DESC>(m, "DXGI_SWAP_CHAIN_DESC") //
         .def(py::init())                                        //
         .def(py::init([](DXGI_MODE_DESC BufferDesc, DXGI_SAMPLE_DESC SampleDesc, uint32_t BufferUsage, UINT BufferCount, uint64_t OutputWindow, BOOL Windowed,
-                         DXGI_SWAP_EFFECT SwapEffect, DXGI_SWAP_CHAIN_FLAG Flags = (DXGI_SWAP_CHAIN_FLAG)0) {
+                         DXGI_SWAP_EFFECT SwapEffect, int Flags = (int)0) {
                  return DXGI_SWAP_CHAIN_DESC{BufferDesc, SampleDesc, (uint32_t)BufferUsage, BufferCount, (HWND)OutputWindow, Windowed, SwapEffect, (UINT)Flags};
              }),
              "BufferDesc"_a, "SampleDesc"_a, "BufferUsage"_a, "BufferCount"_a, "OutputWindow"_a, "Windowed"_a, "SwapEffect"_a, "Flags"_a) //
@@ -1398,6 +1503,7 @@ void export_d3d12_0(py::module &m) {
         .value("VIDEO_PROCESS_WRITE", D3D12_RESOURCE_STATE_VIDEO_PROCESS_WRITE)
         .value("VIDEO_ENCODE_READ", D3D12_RESOURCE_STATE_VIDEO_ENCODE_READ)
         .value("VIDEO_ENCODE_WRITE", D3D12_RESOURCE_STATE_VIDEO_ENCODE_WRITE)
+        .value("RAYTRACING_ACCELERATION_STRUCTURE", D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE)
         .export_values();
 
     py::enum_<D3D12_HEAP_FLAGS>(m, "D3D12_HEAP_FLAGS")
@@ -1489,6 +1595,7 @@ void export_d3d12_0(py::module &m) {
         .value("ALLOW_SIMULTANEOUS_ACCESS", D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS)
         .value("VIDEO_DECODE_REFERENCE_ONLY", D3D12_RESOURCE_FLAG_VIDEO_DECODE_REFERENCE_ONLY)
         .value("VIDEO_ENCODE_REFERENCE_ONLY", D3D12_RESOURCE_FLAG_VIDEO_ENCODE_REFERENCE_ONLY)
+        .value("RAYTRACING_ACCELERATION_STRUCTURE", D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE)
         .export_values();
 
     py::enum_<D3D12_TEXTURE_LAYOUT>(m, "D3D12_TEXTURE_LAYOUT")
@@ -1650,8 +1757,8 @@ void export_d3d12_0(py::module &m) {
         .def("Reset", &ID3D12CommandAllocatorWrapper::Reset)                                                               //
         ;
 
-    py::class_<D3D12_RESOURCE_TRANSITION_BARRIER>(m, "D3D12_RESOURCE_TRANSITION_BARRIER")                                                                           //
-        .def(py::init())                                                                                                                                            //
+    py::class_<D3D12_RESOURCE_TRANSITION_BARRIER>(m, "D3D12_RESOURCE_TRANSITION_BARRIER")                                                 //
+        .def(py::init())                                                                                                                  //
         .def(py::init([](std::shared_ptr<ID3D12ResourceWrapper> pResource, UINT Subresource, uint32_t StateBefore, uint32_t StateAfter) { //
                  D3D12_RESOURCE_TRANSITION_BARRIER barrier = {};
                  barrier.pResource                         = pResource->resource;
@@ -1846,10 +1953,16 @@ void export_d3d12_0(py::module &m) {
         .def("RSSetViewports", &ID3D12GraphicsCommandListWrapper::RSSetViewports, "Viewports"_a)   //
         .def("RSSetScissorRects", &ID3D12GraphicsCommandListWrapper::RSSetScissorRects, "Rects"_a) //
         .def("OMSetRenderTargets", &ID3D12GraphicsCommandListWrapper::OMSetRenderTargets, "RenderTargetDescriptors"_a, "RTSingleHandleToDescriptorRange"_a = FALSE,
-             "DepthStencilDescriptor"_a = std::optional<D3D12_CPU_DESCRIPTOR_HANDLE>{})                                                                       //
-        .def("ClearRenderTargetView", &ID3D12GraphicsCommandListWrapper::ClearRenderTargetView, "View"_a, "Color"_a, "Rects"_a)                               //
-        .def("SetDescriptorHeaps", &ID3D12GraphicsCommandListWrapper::SetDescriptorHeaps, "DescriptorHeaps"_a)                                                //
-        .def("SetGraphicsRootDescriptorTable", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootDescriptorTable, "RootParameterIndex"_a, "BaseDescriptor"_a) //
+             "DepthStencilDescriptor"_a = std::optional<D3D12_CPU_DESCRIPTOR_HANDLE>{})                                                                                         //
+        .def("ClearRenderTargetView", &ID3D12GraphicsCommandListWrapper::ClearRenderTargetView, "View"_a, "Color"_a, "Rects"_a)                                                 //
+        .def("SetDescriptorHeaps", &ID3D12GraphicsCommandListWrapper::SetDescriptorHeaps, "DescriptorHeaps"_a)                                                                  //
+        .def("SetGraphicsRootDescriptorTable", &ID3D12GraphicsCommandListWrapper::SetGraphicsRootDescriptorTable, "RootParameterIndex"_a, "BaseDescriptor"_a)                   //
+        .def("SetComputeRootDescriptorTable", &ID3D12GraphicsCommandListWrapper::SetComputeRootDescriptorTable, "RootParameterIndex"_a, "BaseDescriptor"_a)                     //
+        .def("BuildRaytracingAccelerationStructure", &ID3D12GraphicsCommandListWrapper::BuildRaytracingAccelerationStructure, "Descs"_a, "PostbuildInfoDescs"_a = std::nullopt) //
+        .def("EmitRaytracingAccelerationStructurePostbuildInfo", &ID3D12GraphicsCommandListWrapper::EmitRaytracingAccelerationStructurePostbuildInfo, "Descs"_a,
+             "SourceAccelerationStructureData"_a) //
+        .def("CopyRaytracingAccelerationStructure", &ID3D12GraphicsCommandListWrapper::CopyRaytracingAccelerationStructure, "DestAccelerationStructureData"_a,
+             "SourceAccelerationStructureData"_a, "Mode"_a) //
         ;
 
     py::enum_<D3D12_BLEND_OP>(m, "D3D12_BLEND_OP")
@@ -2506,6 +2619,161 @@ void export_d3d12_0(py::module &m) {
 
     m.attr("D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING") = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
+    py::enum_<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS>(m, "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS", py::arithmetic()) //
+        .value("NONE", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE)                                                                //
+        .value("ALLOW_UPDATE", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE)                                                //
+        .value("ALLOW_COMPACTION", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION)                                        //
+        .value("PREFER_FAST_TRACE", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE)                                      //
+        .value("PREFER_FAST_BUILD", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD)                                      //
+        .value("MINIMIZE_MEMORY", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_MINIMIZE_MEMORY)                                          //
+        .value("PERFORM_UPDATE", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE)                                            //
+        .export_values();
+
+    py::enum_<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE>(m, "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE") //
+        .value("INFO_COMPACTED_SIZE", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE)                                 //
+        .value("INFO_TOOLS_VISUALIZATION", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TOOLS_VISUALIZATION)                       //
+        .export_values();
+
+    py::class_<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC>(m, "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC") //
+        .def(py::init([](D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE InfoType, D3D12_GPU_VIRTUAL_ADDRESS DestBuffer) {
+                 D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC desc = {};
+                 desc.InfoType                                                    = InfoType;
+                 desc.DestBuffer                                                  = DestBuffer;
+                 return desc;
+             }),
+             "InfoType"_a = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE, "DestBuffer"_a = 0) //
+        ;
+
+    py::enum_<D3D12_RAYTRACING_GEOMETRY_TYPE>(m, "D3D12_RAYTRACING_GEOMETRY_TYPE", py::arithmetic())    //
+        .value("TRIANGLES", D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES)                                   //
+        .value("PROCEDURAL_PRIMITIVE_AABBS", D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS) //
+        .export_values();
+
+    py::class_<D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE>(m, "D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE") //
+        .def(py::init([](UINT64 StartAddress, UINT64 StrideInBytes, UINT64 SizeInBytes) {
+                 D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE desc = {};
+                 desc.StartAddress                               = StartAddress;
+                 desc.StrideInBytes                              = StrideInBytes;
+                 desc.SizeInBytes                                = SizeInBytes;
+                 return desc;
+             }),
+             "StartAddress"_a = 0, "StrideInBytes"_a = 0, "SizeInBytes"_a = 0)                      //
+        .def_readwrite("StartAddress", &D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE::StartAddress)   //
+        .def_readwrite("StrideInBytes", &D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE::StrideInBytes) //
+        .def_readwrite("SizeInBytes", &D3D12_GPU_VIRTUAL_ADDRESS_RANGE_AND_STRIDE::SizeInBytes)     //
+        ;
+    py::class_<D3D12_GPU_VIRTUAL_ADDRESS_RANGE>(m, "D3D12_GPU_VIRTUAL_ADDRESS_RANGE")  //
+        .def(py::init())                                                               //
+        .def_readwrite("StartAddress", &D3D12_GPU_VIRTUAL_ADDRESS_RANGE::StartAddress) //
+        .def_readwrite("SizeInBytes", &D3D12_GPU_VIRTUAL_ADDRESS_RANGE::SizeInBytes)   //
+        ;
+    py::enum_<D3D12_RAYTRACING_INSTANCE_FLAGS>(m, "D3D12_RAYTRACING_INSTANCE_FLAGS", py::arithmetic())            //
+        .value("NONE", D3D12_RAYTRACING_INSTANCE_FLAG_NONE)                                                       //
+        .value("TRIANGLE_CULL_DISABLE", D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE)                     //
+        .value("TRIANGLE_FRONT_COUNTERCLOCKWISE", D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_FRONT_COUNTERCLOCKWISE) //
+        .value("FORCE_OPAQUE", D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE)                                       //
+        .value("FORCE_NON_OPAQUE", D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE)                               //
+        .export_values();
+    py::enum_<D3D12_RAYTRACING_GEOMETRY_FLAGS>(m, "D3D12_RAYTRACING_GEOMETRY_FLAGS", py::arithmetic())          //
+        .value("NONE", D3D12_RAYTRACING_GEOMETRY_FLAG_NONE)                                                     //
+        .value("OPAQUE", D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE)                                                 //
+        .value("NO_DUPLICATE_ANYHIT_INVOCATION", D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION) //
+        .export_values();
+    py::class_<D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE>(m, "D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE") //
+        .def(py::init([](D3D12_GPU_VIRTUAL_ADDRESS StartAddress, UINT64 StrideInBytes) {
+                 D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE desc = {};
+                 desc.StartAddress                         = StartAddress;
+                 desc.StrideInBytes                        = StrideInBytes;
+                 return desc;
+             }),
+             "StartAddress"_a = 0, "StrideInBytes"_a = 0) //
+        ;
+    py::class_<D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC>(m, "D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC") //
+        .def(py::init([](UINT32 VertexCount, D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE VertexBuffer, DXGI_FORMAT VertexFormat, UINT IndexCount, D3D12_GPU_VIRTUAL_ADDRESS IndexBuffer,
+                         DXGI_FORMAT IndexFormat, D3D12_GPU_VIRTUAL_ADDRESS Transform3x4) {
+                 D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC desc = {};
+                 desc.VertexCount                              = VertexCount;
+                 desc.VertexBuffer                             = VertexBuffer;
+                 desc.VertexFormat                             = VertexFormat;
+                 desc.IndexCount                               = IndexCount;
+                 desc.IndexBuffer                              = IndexBuffer;
+                 desc.IndexFormat                              = IndexFormat;
+                 desc.Transform3x4                             = Transform3x4;
+                 return desc;
+             }),
+             "VertexCount"_a = 0, "VertexBuffer"_a = D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE{}, "VertexFormat"_a = DXGI_FORMAT_UNKNOWN, "IndexCount"_a = 0, "IndexBuffer"_a = 0,
+             "IndexFormat"_a = DXGI_FORMAT_UNKNOWN, "Transform3x4"_a = D3D12_GPU_VIRTUAL_ADDRESS(0)) //
+
+        ;
+
+    py::class_<D3D12_RAYTRACING_GEOMETRY_AABBS_DESC>(m, "D3D12_RAYTRACING_GEOMETRY_AABBS_DESC") //
+        .def(py::init([](UINT64 AABBCount, D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE AABBs) {
+                 D3D12_RAYTRACING_GEOMETRY_AABBS_DESC desc = {};
+                 desc.AABBCount                            = AABBCount;
+                 desc.AABBs                                = AABBs;
+                 return desc;
+             }),
+             "AABBCount"_a = 0, "AABBs"_a = D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE{}) //
+        ;
+    py::class_<D3D12_RAYTRACING_GEOMETRY_DESC>(m, "D3D12_RAYTRACING_GEOMETRY_DESC") //
+        .def(py::init([](D3D12_RAYTRACING_GEOMETRY_FLAGS Flags, D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC Triangles) {
+                 D3D12_RAYTRACING_GEOMETRY_DESC desc = {};
+                 desc.Type                           = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+                 desc.Flags                          = Flags;
+                 desc.Triangles                      = Triangles;
+                 return desc;
+             }),
+             "Flags"_a = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE, "Triangles"_a = D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC{}) //
+        .def(py::init([](D3D12_RAYTRACING_GEOMETRY_FLAGS Flags, D3D12_RAYTRACING_GEOMETRY_AABBS_DESC AABBs) {
+                 D3D12_RAYTRACING_GEOMETRY_DESC desc = {};
+                 desc.Type                           = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
+                 desc.Flags                          = Flags;
+                 desc.AABBs                          = AABBs;
+                 return desc;
+             }),
+             "Flags"_a = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE, "AABBs"_a = D3D12_RAYTRACING_GEOMETRY_AABBS_DESC{}) //
+        ;
+
+    // D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS
+    py::class_<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper, std::shared_ptr<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper>>(
+        m, "D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS") //
+        .def(py::init([](uint32_t Flags, UINT NumDescs, D3D12_GPU_VIRTUAL_ADDRESS InstanceDescs) {
+                 return std::make_shared<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper>((D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS)Flags, NumDescs,
+                                                                                                       InstanceDescs);
+             }),
+             "Flags"_a = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE, "NumDescs"_a = 0, "InstanceDescs"_a = 0) //
+        .def(py::init([](uint32_t Flags, std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> GeometryDescs) {
+                 return std::make_shared<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper>((D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS)Flags, GeometryDescs);
+             }),
+             "Flags"_a = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE, "GeometryDescs"_a = std::vector<D3D12_RAYTRACING_GEOMETRY_DESC>{}) //
+        ;
+
+    // D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO
+    py::class_<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO>(m, "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO")            //
+        .def_readwrite("ResultDataMaxSizeInBytes", &D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO::ResultDataMaxSizeInBytes)         //
+        .def_readwrite("ScratchDataSizeInBytes", &D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO::ScratchDataSizeInBytes)             //
+        .def_readwrite("UpdateScratchDataSizeInBytes", &D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO::UpdateScratchDataSizeInBytes) //
+        ;
+
+    py::class_<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC_WRAPPER, std::shared_ptr<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC_WRAPPER>>(
+        m, "D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC") //
+        .def(py::init([](D3D12_GPU_VIRTUAL_ADDRESS Source, D3D12_GPU_VIRTUAL_ADDRESS Dest, D3D12_GPU_VIRTUAL_ADDRESS Scratch,
+                         std::shared_ptr<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_Wrapper> Inputs) {
+                 return std::make_shared<D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC_WRAPPER>(Inputs, Source, Dest, Scratch);
+             }),
+             "Source"_a = 0, "Dest"_a = 0, "Scratch"_a = 0, "Inputs"_a = nullptr) //
+        ;
+
+    py::enum_<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE>(m, "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE") //
+        .value("TOP_LEVEL", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL)                            //
+        .value("BOTTOM_LEVEL", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL)                      //
+        .export_values();
+
+    py::enum_<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE>(m, "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE") //
+        .value("CLONE", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_CLONE)                                         //
+        .value("COMPACT", D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT)                                     //
+        .export_values();
+
     py::class_<D3D12_SHADER_RESOURCE_VIEW_DESC>(m, "D3D12_SHADER_RESOURCE_VIEW_DESC") //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_BUFFER_SRV Buffer) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
@@ -2607,6 +2875,121 @@ void export_d3d12_0(py::module &m) {
              }),
              "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "RaytracingAccelerationStructure"_a = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV{}) //
         ;
+    py::enum_<D3D12_BUFFER_UAV_FLAGS>(m, "D3D12_BUFFER_UAV_FLAGS", py::arithmetic()) //
+        .value("NONE", D3D12_BUFFER_UAV_FLAG_NONE)                                   //
+        .value("RAW", D3D12_BUFFER_UAV_FLAG_RAW)                                     //
+        .export_values();
+    py::class_<D3D12_BUFFER_UAV>(m, "D3D12_BUFFER_UAV") //
+        .def(py::init([](UINT64 FirstElement, UINT NumElements, UINT StructureByteStride, UINT64 CounterOffsetInBytes, D3D12_BUFFER_UAV_FLAGS Flags) {
+                 D3D12_BUFFER_UAV desc     = {};
+                 desc.FirstElement         = FirstElement;
+                 desc.NumElements          = NumElements;
+                 desc.StructureByteStride  = StructureByteStride;
+                 desc.CounterOffsetInBytes = CounterOffsetInBytes;
+                 desc.Flags                = Flags;
+                 return desc;
+             }),
+             "FirstElement"_a = 0, "NumElements"_a = 1, "StructureByteStride"_a = 0, "CounterOffsetInBytes"_a = 0, "Flags"_a = D3D12_BUFFER_UAV_FLAG_NONE) //
+        ;
+    py::class_<D3D12_TEX1D_UAV>(m, "D3D12_TEX1D_UAV") //
+        .def(py::init([](UINT MipSlice) {
+                 D3D12_TEX1D_UAV desc = {};
+                 desc.MipSlice        = MipSlice;
+                 return desc;
+             }),
+             "MipSlice"_a = 0) //
+        ;
+    py::class_<D3D12_TEX1D_ARRAY_UAV>(m, "D3D12_TEX1D_ARRAY_UAV") //
+        .def(py::init([](UINT MipSlice, UINT FirstArraySlice, UINT ArraySize) {
+                 D3D12_TEX1D_ARRAY_UAV desc = {};
+                 desc.MipSlice              = MipSlice;
+                 desc.FirstArraySlice       = FirstArraySlice;
+                 desc.ArraySize             = ArraySize;
+                 return desc;
+             }),
+             "MipSlice"_a = 0, "FirstArraySlice"_a = 0, "ArraySize"_a = 1) //
+        ;
+    py::class_<D3D12_TEX2D_UAV>(m, "D3D12_TEX2D_UAV") //
+        .def(py::init([](UINT MipSlice, UINT PlaneSlice) {
+                 D3D12_TEX2D_UAV desc = {};
+                 desc.MipSlice        = MipSlice;
+                 desc.PlaneSlice      = PlaneSlice;
+                 return desc;
+             }),
+             "MipSlice"_a = 0, "PlaneSlice"_a = 0) //
+        ;
+    py::class_<D3D12_TEX2D_ARRAY_UAV>(m, "D3D12_TEX2D_ARRAY_UAV") //
+        .def(py::init([](UINT MipSlice, UINT FirstArraySlice, UINT ArraySize, UINT PlaneSlice) {
+                 D3D12_TEX2D_ARRAY_UAV desc = {};
+                 desc.MipSlice              = MipSlice;
+                 desc.FirstArraySlice       = FirstArraySlice;
+                 desc.ArraySize             = ArraySize;
+                 desc.PlaneSlice            = PlaneSlice;
+                 return desc;
+             }),
+             "MipSlice"_a = 0, "FirstArraySlice"_a = 0, "ArraySize"_a = 1, "PlaneSlice"_a = 0) //
+        ;
+    py::class_<D3D12_TEX3D_UAV>(m, "D3D12_TEX3D_UAV") //
+        .def(py::init([](UINT MipSlice, UINT FirstWSlice, UINT WSize) {
+                 D3D12_TEX3D_UAV desc = {};
+                 desc.MipSlice        = MipSlice;
+                 desc.FirstWSlice     = FirstWSlice;
+                 desc.WSize           = WSize;
+                 return desc;
+             }),
+             "MipSlice"_a = 0, "FirstWSlice"_a = 0, "WSize"_a = 1) //
+        ;
+    py::class_<D3D12_UNORDERED_ACCESS_VIEW_DESC>(m, "D3D12_UNORDERED_ACCESS_VIEW_DESC") //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_BUFFER_UAV Buffer) {
+                 D3D12_UNORDERED_ACCESS_VIEW_DESC desc = {};
+                 desc.Format                           = Format;
+                 desc.ViewDimension                    = D3D12_UAV_DIMENSION_BUFFER;
+                 desc.Buffer                           = Buffer;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Buffer"_a = D3D12_BUFFER_UAV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX1D_UAV Texture1D) {
+                 D3D12_UNORDERED_ACCESS_VIEW_DESC desc = {};
+                 desc.Format                           = Format;
+                 desc.ViewDimension                    = D3D12_UAV_DIMENSION_TEXTURE1D;
+                 desc.Texture1D                        = Texture1D;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture1D"_a = D3D12_TEX1D_UAV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX1D_ARRAY_UAV Texture1DArray) {
+                 D3D12_UNORDERED_ACCESS_VIEW_DESC desc = {};
+                 desc.Format                           = Format;
+                 desc.ViewDimension                    = D3D12_UAV_DIMENSION_TEXTURE1DARRAY;
+                 desc.Texture1DArray                   = Texture1DArray;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture1DArray"_a = D3D12_TEX1D_ARRAY_UAV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX2D_UAV Texture2D) {
+                 D3D12_UNORDERED_ACCESS_VIEW_DESC desc = {};
+                 desc.Format                           = Format;
+                 desc.ViewDimension                    = D3D12_UAV_DIMENSION_TEXTURE2D;
+                 desc.Texture2D                        = Texture2D;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture2D"_a = D3D12_TEX2D_UAV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX2D_ARRAY_UAV Texture2DArray) {
+                 D3D12_UNORDERED_ACCESS_VIEW_DESC desc = {};
+                 desc.Format                           = Format;
+                 desc.ViewDimension                    = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                 desc.Texture2DArray                   = Texture2DArray;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture2DArray"_a = D3D12_TEX2D_ARRAY_UAV{}) //
+        .def(py::init([](DXGI_FORMAT Format, D3D12_TEX3D_UAV Texture3D) {
+                 D3D12_UNORDERED_ACCESS_VIEW_DESC desc = {};
+                 desc.Format                           = Format;
+                 desc.ViewDimension                    = D3D12_UAV_DIMENSION_TEXTURE3D;
+                 desc.Texture3D                        = Texture3D;
+                 return desc;
+             }),
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Texture3D"_a = D3D12_TEX3D_UAV{}) //
+        ;
+
     py::class_<ID3D12DeviceWrapper, std::shared_ptr<ID3D12DeviceWrapper>>(m, "ID3D12Device")                                                                //
         .def(py::init<ID3D12Device *>())                                                                                                                    //
         .def("GetCopyableFootprints", &ID3D12DeviceWrapper::GetCopyableFootprints,                                                                          //
@@ -2633,6 +3016,7 @@ void export_d3d12_0(py::module &m) {
         .def("CreateUnorderedAccessView", &ID3D12DeviceWrapper::CreateUnorderedAccessView, "Resource"_a, "CounterResource"_a, "Desc"_a, "DestDescriptor"_a) //
         .def("CreateSampler", &ID3D12DeviceWrapper::CreateSampler, "Desc"_a, "DestDescriptor"_a)                                                            //
         .def("GetDescriptorHandleIncrementSize", &ID3D12DeviceWrapper::GetDescriptorHandleIncrementSize, "Type"_a)                                          //
+        .def("GetRaytracingAccelerationStructurePrebuildInfo", &ID3D12DeviceWrapper::GetRaytracingAccelerationStructurePrebuildInfo, "Inputs"_a)            //
         ;
 
     m.def("CreateDevice", &CreateDevice);

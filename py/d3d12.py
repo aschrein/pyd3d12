@@ -22,8 +22,21 @@
 
 from .utils import *
 from .dds import *
+import ctypes
 
 native = find_native_module("native")
+
+class D3D12_RAYTRACING_INSTANCE_DESC(ctypes.Structure):
+    _fields_ = [
+        ("Transform", ctypes.c_float * 4 * 3),
+        ("InstanceID", ctypes.c_uint32, 24),
+        ("InstanceMask", ctypes.c_uint32, 8),
+        ("InstanceContributionToHitGroupIndex", ctypes.c_uint32, 24),
+        ("Flags", ctypes.c_uint32, 8),
+        ("AccelerationStructure", ctypes.c_uint64)
+    ]
+
+assert ctypes.sizeof(D3D12_RAYTRACING_INSTANCE_DESC) == 64, "D3D12_RAYTRACING_INSTANCE_DESC is not the correct size"
 
 class CBV_SRV_UAV_DescriptorHeap:
     def __init__(self, device, num_descriptors = 1 << 10):
@@ -82,6 +95,38 @@ def make_write_combined_buffer(device, size, state = native.D3D12_RESOURCE_STATE
                 ),
                 Layout = native.D3D12_TEXTURE_LAYOUT.ROW_MAJOR,
                 Flags = native.D3D12_RESOURCE_FLAGS.NONE
+            ),
+            initialState = state,
+            optimizedClearValue = None
+        )
+    if name is not None:
+        res.SetName(name)
+    return res
+
+def make_uav_buffer(device, size, state = native.D3D12_RESOURCE_STATES.UNORDERED_ACCESS, name = None):
+    res = device.CreateCommittedResource(
+            heapProperties = native.D3D12_HEAP_PROPERTIES(
+                Type = native.D3D12_HEAP_TYPE.CUSTOM,
+                CPUPageProperty = native.D3D12_CPU_PAGE_PROPERTY.WRITE_COMBINE,
+                MemoryPoolPreference = native.D3D12_MEMORY_POOL.L0,
+                CreationNodeMask = 1,
+                VisibleNodeMask = 1
+            ),
+            heapFlags = native.D3D12_HEAP_FLAGS.NONE,
+            resourceDesc = native.D3D12_RESOURCE_DESC(
+                Dimension = native.D3D12_RESOURCE_DIMENSION.BUFFER,
+                Alignment = 0,
+                Width = size,
+                Height = 1,
+                DepthOrArraySize = 1,
+                MipLevels = 1,
+                Format = native.DXGI_FORMAT.UNKNOWN,
+                SampleDesc = native.DXGI_SAMPLE_DESC(
+                    Count = 1,
+                    Quality = 0
+                ),
+                Layout = native.D3D12_TEXTURE_LAYOUT.ROW_MAJOR,
+                Flags = native.D3D12_RESOURCE_FLAGS.ALLOW_UNORDERED_ACCESS
             ),
             initialState = state,
             optimizedClearValue = None
