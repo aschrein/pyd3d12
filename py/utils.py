@@ -30,6 +30,7 @@ import time
 CONSOLE_COLOR_RED = "\033[91m"
 CONSOLE_COLOR_GREEN = "\033[92m"
 CONSOLE_COLOR_END = "\033[0m"
+CONSOLE_COLOR_RESET = "\033[0m"
 
 def set_build_type(build_type):
     os.environ["NATIVE_BUILD_TYPE"] = build_type

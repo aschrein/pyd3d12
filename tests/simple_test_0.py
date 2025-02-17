@@ -119,7 +119,7 @@ signature = device.CreateRootSignature(
 )
 assert signature is not None
 pso_desc = native.D3D12_COMPUTE_PIPELINE_STATE_DESC(
-    pRootSignature = signature,
+    RootSignature = signature,
     CS = native.D3D12_SHADER_BYTECODE(bytecode),
     NodeMask = 0,
     CachedPSO = None,

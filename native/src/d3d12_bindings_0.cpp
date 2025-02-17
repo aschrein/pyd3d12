@@ -1448,7 +1448,7 @@ void export_d3d12_0(py::module &m) {
                          D3D12_PIPELINE_STATE_FLAGS                     Flags) {                                                                                                  //
                  return D3D12_COMPUTE_PIPELINE_STATE_DESC_Wrapper(pRootSignature, CS, NodeMask, CachedPSO, Flags);
              }),                                                                                                                                         //
-             "pRootSignature"_a = nullptr, "CS"_a = nullptr, "NodeMask"_a = 0, "CachedPSO"_a = std::nullopt, "Flags"_a = D3D12_PIPELINE_STATE_FLAG_NONE) //
+             "RootSignature"_a = nullptr, "CS"_a = nullptr, "NodeMask"_a = 0, "CachedPSO"_a = std::nullopt, "Flags"_a = D3D12_PIPELINE_STATE_FLAG_NONE) //
         ;
 
     py::class_<D3D12_DEPTH_STENCIL_VALUE>(m, "D3D12_DEPTH_STENCIL_VALUE") //

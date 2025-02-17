@@ -37,13 +37,8 @@ lib_list = [
     "sciking-build",
     "sciking-build-core",
     "numpy",
-    # "Pygments",
-    # "PyQt5",
-    # "PyQt5-sip",
-    # "PyQt5-Qt5",
-    # "QDarkStyle",
-    # "watchdog",
-    # "QScintilla",
+    "PyQt5",
+    "gltflib",
 ]
 
 setuptools.setup(
