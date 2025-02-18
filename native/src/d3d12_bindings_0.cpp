@@ -155,7 +155,11 @@ public:
     ID3D12RootSignature *rootSignature = nullptr;
 
 public:
-    ID3D12RootSignatureWrapper(ID3D12RootSignature *rootSignature) : rootSignature(rootSignature) {}
+    ID3D12RootSignatureWrapper(ID3D12RootSignature *rootSignature, bool _own = true) : rootSignature(rootSignature) {
+        if (!_own) {
+            rootSignature->AddRef();
+        }
+    }
 
     ~ID3D12RootSignatureWrapper() {
         if (rootSignature) rootSignature->Release();
@@ -167,7 +171,11 @@ public:
     ID3D12DescriptorHeap *descriptorHeap = nullptr;
 
 public:
-    ID3D12DescriptorHeapWrapper(ID3D12DescriptorHeap *descriptorHeap) : descriptorHeap(descriptorHeap) {}
+    ID3D12DescriptorHeapWrapper(ID3D12DescriptorHeap *descriptorHeap, bool _own = true) : descriptorHeap(descriptorHeap) {
+        if (!_own) {
+            descriptorHeap->AddRef();
+        }
+    }
 
     ~ID3D12DescriptorHeapWrapper() {
         if (descriptorHeap) descriptorHeap->Release();
@@ -181,7 +189,11 @@ public:
     ID3D12CommandAllocator *commandAllocator = nullptr;
 
 public:
-    ID3D12CommandAllocatorWrapper(ID3D12CommandAllocator *commandAllocator) : commandAllocator(commandAllocator) {}
+    ID3D12CommandAllocatorWrapper(ID3D12CommandAllocator *commandAllocator, bool _own = true) : commandAllocator(commandAllocator) {
+        if (!_own) {
+            commandAllocator->AddRef();
+        }
+    }
 
     ~ID3D12CommandAllocatorWrapper() {
         if (commandAllocator) commandAllocator->Release();
@@ -194,7 +206,11 @@ public:
     ID3D12CommandSignature *commandSignature = nullptr;
 
 public:
-    ID3D12CommandSignatureWrapper(ID3D12CommandSignature *commandSignature) : commandSignature(commandSignature) {}
+    ID3D12CommandSignatureWrapper(ID3D12CommandSignature *commandSignature, bool _own = true) : commandSignature(commandSignature) {
+        if (!_own) {
+            commandSignature->AddRef();
+        }
+    }
 
     ~ID3D12CommandSignatureWrapper() {
         if (commandSignature) commandSignature->Release();
@@ -208,9 +224,12 @@ public:
     ID3D12Resource2 *resource2 = nullptr;
 
 public:
-    ID3D12ResourceWrapper(ID3D12Resource *resource) : resource(resource) {
+    ID3D12ResourceWrapper(ID3D12Resource *resource, bool _own = true) : resource(resource) {
         resource->QueryInterface(IID_PPV_ARGS(&resource1));
         resource->QueryInterface(IID_PPV_ARGS(&resource2));
+        if (!_own) {
+            resource->AddRef();
+        }
     }
     ~ID3D12ResourceWrapper() {
         if (resource) resource->Release();
@@ -368,7 +387,10 @@ public:
     ID3D12GraphicsCommandList8 *commandList8 = nullptr;
 
 public:
-    ID3D12GraphicsCommandListWrapper(ID3D12GraphicsCommandList *commandList) : commandList(commandList) {
+    ID3D12GraphicsCommandListWrapper(ID3D12GraphicsCommandList *commandList, bool _own = true) : commandList(commandList) {
+        if (!_own) {
+            commandList->AddRef();
+        }
         commandList->QueryInterface(IID_PPV_ARGS(&commandList1));
         commandList->QueryInterface(IID_PPV_ARGS(&commandList2));
         commandList->QueryInterface(IID_PPV_ARGS(&commandList3));
@@ -556,7 +578,11 @@ public:
     ID3D12CommandQueue *commandQueue = nullptr;
 
 public:
-    ID3D12CommandQueueWrapper(ID3D12CommandQueue *commandQueue) : commandQueue(commandQueue) {}
+    ID3D12CommandQueueWrapper(ID3D12CommandQueue *commandQueue, bool _own = true) : commandQueue(commandQueue) {
+        if (!_own) {
+            commandQueue->AddRef();
+        }
+    }
 
     ~ID3D12CommandQueueWrapper() {
         if (commandQueue) commandQueue->Release();
@@ -586,7 +612,10 @@ public:
     IDXGISwapChain4 *swapChain4 = nullptr;
 
 public:
-    IDXGISwapChainWrapper(IDXGISwapChain *swapChain) : swapChain(swapChain) {
+    IDXGISwapChainWrapper(IDXGISwapChain *swapChain, bool _own = true) : swapChain(swapChain) {
+        if (!_own) {
+            swapChain->AddRef();
+        }
         swapChain->QueryInterface(IID_PPV_ARGS(&swapChain1));
         swapChain->QueryInterface(IID_PPV_ARGS(&swapChain2));
         swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3));
@@ -626,7 +655,10 @@ public:
     IDXGIAdapter4 *adapter4 = nullptr;
 
 public:
-    IDXGIAdapterWrapper(IDXGIAdapter *adapter) : adapter(adapter) {
+    IDXGIAdapterWrapper(IDXGIAdapter *adapter, bool _own = true) : adapter(adapter) {
+        if (!_own) {
+            adapter->AddRef();
+        }
         adapter->QueryInterface(IID_PPV_ARGS(&adapter1));
         adapter->QueryInterface(IID_PPV_ARGS(&adapter2));
         adapter->QueryInterface(IID_PPV_ARGS(&adapter3));
@@ -957,7 +989,10 @@ public:
     ID3D12Device8 *device8 = nullptr;
 
 public:
-    ID3D12DeviceWrapper(ID3D12Device *device) : device(device) {
+    ID3D12DeviceWrapper(ID3D12Device *device, bool _own = true) : device(device) {
+        if (!_own) {
+            device->AddRef();
+        }
         device->QueryInterface(IID_PPV_ARGS(&device1));
         device->QueryInterface(IID_PPV_ARGS(&device2));
         device->QueryInterface(IID_PPV_ARGS(&device3));
@@ -1069,7 +1104,7 @@ public:
         device->CreateConstantBufferView(&Desc, DestDescriptor);
     }
     void CreateShaderResourceView(std::shared_ptr<ID3D12ResourceWrapper> pResource, D3D12_SHADER_RESOURCE_VIEW_DESC Desc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) {
-        device->CreateShaderResourceView(pResource->resource, &Desc, DestDescriptor);
+        device->CreateShaderResourceView(pResource ? pResource->resource : nullptr, &Desc, DestDescriptor);
     }
     void CreateUnorderedAccessView(std::shared_ptr<ID3D12ResourceWrapper> pResource, std::shared_ptr<ID3D12ResourceWrapper> pCounterResource, D3D12_UNORDERED_ACCESS_VIEW_DESC Desc,
                                    D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) {
@@ -1447,7 +1482,7 @@ void export_d3d12_0(py::module &m) {
                          std::optional<D3D12_CACHED_PIPELINE_STATE>     CachedPSO,                                                                            //
                          D3D12_PIPELINE_STATE_FLAGS                     Flags) {                                                                                                  //
                  return D3D12_COMPUTE_PIPELINE_STATE_DESC_Wrapper(pRootSignature, CS, NodeMask, CachedPSO, Flags);
-             }),                                                                                                                                         //
+             }),                                                                                                                                        //
              "RootSignature"_a = nullptr, "CS"_a = nullptr, "NodeMask"_a = 0, "CachedPSO"_a = std::nullopt, "Flags"_a = D3D12_PIPELINE_STATE_FLAG_NONE) //
         ;
 
@@ -2783,7 +2818,7 @@ void export_d3d12_0(py::module &m) {
                  desc.Buffer                          = Buffer;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Buffer"_a = D3D12_BUFFER_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "Buffer"_a = D3D12_BUFFER_SRV{}) //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX1D_SRV Texture1D) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
                  desc.Format                          = Format;
@@ -2792,7 +2827,7 @@ void export_d3d12_0(py::module &m) {
                  desc.Texture1D                       = Texture1D;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture1D"_a = D3D12_TEX1D_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "Texture1D"_a = D3D12_TEX1D_SRV{}) //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX1D_ARRAY_SRV Texture1DArray) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
                  desc.Format                          = Format;
@@ -2801,7 +2836,7 @@ void export_d3d12_0(py::module &m) {
                  desc.Texture1DArray                  = Texture1DArray;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture1DArray"_a = D3D12_TEX1D_ARRAY_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "Texture1DArray"_a = D3D12_TEX1D_ARRAY_SRV{}) //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX2D_SRV Texture2D) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
                  desc.Format                          = Format;
@@ -2810,7 +2845,7 @@ void export_d3d12_0(py::module &m) {
                  desc.Texture2D                       = Texture2D;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture2D"_a = D3D12_TEX2D_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "Texture2D"_a = D3D12_TEX2D_SRV{}) //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX2D_ARRAY_SRV Texture2DArray) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
                  desc.Format                          = Format;
@@ -2819,7 +2854,7 @@ void export_d3d12_0(py::module &m) {
                  desc.Texture2DArray                  = Texture2DArray;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture2DArray"_a = D3D12_TEX2D_ARRAY_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "Texture2DArray"_a = D3D12_TEX2D_ARRAY_SRV{}) //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX2DMS_SRV Texture2DMS) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
                  desc.Format                          = Format;
@@ -2828,7 +2863,7 @@ void export_d3d12_0(py::module &m) {
                  desc.Texture2DMS                     = Texture2DMS;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture2DMS"_a = D3D12_TEX2DMS_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "Texture2DMS"_a = D3D12_TEX2DMS_SRV{}) //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX2DMS_ARRAY_SRV Texture2DMSArray) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
                  desc.Format                          = Format;
@@ -2837,7 +2872,7 @@ void export_d3d12_0(py::module &m) {
                  desc.Texture2DMSArray                = Texture2DMSArray;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture2DMSArray"_a = D3D12_TEX2DMS_ARRAY_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "Texture2DMSArray"_a = D3D12_TEX2DMS_ARRAY_SRV{}) //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEX3D_SRV Texture3D) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
                  desc.Format                          = Format;
@@ -2846,7 +2881,7 @@ void export_d3d12_0(py::module &m) {
                  desc.Texture3D                       = Texture3D;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "Texture3D"_a = D3D12_TEX3D_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "Texture3D"_a = D3D12_TEX3D_SRV{}) //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEXCUBE_SRV TextureCube) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
                  desc.Format                          = Format;
@@ -2855,7 +2890,7 @@ void export_d3d12_0(py::module &m) {
                  desc.TextureCube                     = TextureCube;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "TextureCube"_a = D3D12_TEXCUBE_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "TextureCube"_a = D3D12_TEXCUBE_SRV{}) //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_TEXCUBE_ARRAY_SRV TextureCubeArray) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
                  desc.Format                          = Format;
@@ -2864,7 +2899,7 @@ void export_d3d12_0(py::module &m) {
                  desc.TextureCubeArray                = TextureCubeArray;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "TextureCubeArray"_a = D3D12_TEXCUBE_ARRAY_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "TextureCubeArray"_a = D3D12_TEXCUBE_ARRAY_SRV{}) //
         .def(py::init([](DXGI_FORMAT Format, UINT Shader4ComponentMapping, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV RaytracingAccelerationStructure) {
                  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
                  desc.Format                          = Format;
@@ -2873,7 +2908,7 @@ void export_d3d12_0(py::module &m) {
                  desc.RaytracingAccelerationStructure = RaytracingAccelerationStructure;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = 0, "RaytracingAccelerationStructure"_a = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "RaytracingAccelerationStructure"_a = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV{}) //
         ;
     py::enum_<D3D12_BUFFER_UAV_FLAGS>(m, "D3D12_BUFFER_UAV_FLAGS", py::arithmetic()) //
         .value("NONE", D3D12_BUFFER_UAV_FLAG_NONE)                                   //

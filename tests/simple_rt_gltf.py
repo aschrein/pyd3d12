@@ -65,6 +65,17 @@ class Vertex(ctypes.Structure):
         ("color", ctypes.c_float * 4)
     ]
 
+class GeometryDesc(ctypes.Structure):
+    _fields_ = [
+        ("flags", ctypes.c_uint),
+        ("position_offset_dwords", ctypes.c_uint),
+        ("normals_offset_dwords", ctypes.c_uint),
+        ("texcoord_offset_dwords", ctypes.c_uint),
+        ("tangent_offset_dwords", ctypes.c_uint),
+        ("indices_offset_dwords", ctypes.c_uint)
+
+    ]
+
 class ChildWidget(qtw.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -387,9 +398,12 @@ class MainWindow:
         //js
         #define ROOT_SIGNATURE_MACRO \
         "DescriptorTable(" \
-                    "UAV(u0, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE) " \
+                    "UAV(u0, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=0), " \
+                    "SRV(t0, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=1), " \
+                    "SRV(t1, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=2), " \
+                    "SRV(t2, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=3), " \
+                    "SRV(t3, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=4) " \
                     "), " \
-                    "SRV(t0), " \
                     "StaticSampler(s0, " \
                         "Filter = FILTER_MIN_MAG_MIP_LINEAR, " \
                         "AddressU = TEXTURE_ADDRESS_WRAP, " \
@@ -401,6 +415,38 @@ class MainWindow:
         RWTexture2D<float4> u0 : register(u0);
 
         RaytracingAccelerationStructure tlas : register(t0);
+        ByteAddressBuffer attributes : register(t2);
+        ByteAddressBuffer geometry_descs : register(t3);
+
+        struct GeometryDesc {
+            uint flags;
+            uint position_offset_dwords;
+            uint normals_offset_dwords;
+            uint texcoord_offset_dwords;
+            uint tangent_offset_dwords;
+            uint indices_offset_dwords;
+        };
+
+        GeometryDesc LoadGeometryDesc(uint index) {
+            GeometryDesc desc               = (GeometryDesc)0;
+            uint4 pack0                     = geometry_descs.Load4(index * sizeof(GeometryDesc) + 0);
+            uint2 pack                       = geometry_descs.Load2(index * sizeof(GeometryDesc) + 16);
+            desc.flags                      = pack0.x;
+            desc.position_offset_dwords     = pack0.y;
+            desc.normals_offset_dwords      = pack0.z;
+            desc.texcoord_offset_dwords     = pack0.w;
+            desc.tangent_offset_dwords      = pack.x;
+            desc.indices_offset_dwords      = pack.y;
+            return desc;
+        }
+
+        uint3 LoadTriangleIndicesU32x3(uint offset) {
+            return attributes.Load3(offset);
+        }
+
+        float3 LoadAttributeFloat3(uint offset) {
+            return asfloat(attributes.Load3(offset));
+        }
 
         uint hash(uint) {
             uint x = 0x811c9dc5;
@@ -435,8 +481,8 @@ class MainWindow:
             u0.GetDimensions(dims.x, dims.y);
             float2 uv = (float2(DTid.xy) + 0.5f) / float2(dims.xy); 
 
-            float t = -0.3f * 3.14159265359f * 0.333f;
-            float camera_radius     = 1244.0f;
+            float t = 0.2f * 3.14159265359f * 0.333f;
+            float camera_radius     = 1144.0f;
             float3 camera_pos       = float3(sin(t) * camera_radius, cos(t) * camera_radius, 422.0f);
             float3 camera_look_at   = float3(0.0f, 0.0f, 0.0f);
             float3 camera_look      = normalize(camera_look_at - camera_pos);
@@ -444,7 +490,7 @@ class MainWindow:
             float3 camera_right     = normalize(cross(camera_look, camera_up));
             camera_up               = normalize(cross(camera_look, camera_right));
 
-            float3 ray_origin       = camera_pos + camera_right * 100.0f;
+            float3 ray_origin       = camera_pos + camera_right * 550.0f;
             float fov               = 3.14159265359f / 2.0f;
             float aspect_ratio      = 1.0f;
             float fov_tan           = tan(fov * 0.5f);
@@ -461,13 +507,24 @@ class MainWindow:
             ray_query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xffu, ray_desc);
             ray_query.Proceed();
             if (ray_query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-                float2 bary = ray_query.CommittedTriangleBarycentrics();
-                uint primitive_id = ray_query.CommittedPrimitiveIndex();
-                uint geo_id = ray_query.CommittedGeometryIndex();
+                float2 bary         = ray_query.CommittedTriangleBarycentrics();
+                uint primitive_id   = ray_query.CommittedPrimitiveIndex();
+                uint geo_id         = ray_query.CommittedGeometryIndex();
+
+                GeometryDesc desc   = LoadGeometryDesc(geo_id);
+                uint3 indices       = LoadTriangleIndicesU32x3(desc.indices_offset_dwords * 4 + primitive_id * 12);
+
+                float3 normal_0       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.x * 12);
+                float3 normal_1       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.y * 12);
+                float3 normal_2       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.z * 12);
+
+                float3 interpolation =float3(bary.x, bary.y, 1.0f - bary.x - bary.y);
+                float3 normal = normalize(normal_0 * interpolation.x + normal_1 * interpolation.y + normal_2 * interpolation.z);
+
                 float3 color = random_color(geo_id);
                 // u0[DTid.xy] = float4(bary.xy, 0.0f, 1.0f);
                 // u0[DTid.xy] = float4(bary.xyy * 0.5 + color * 0.5, 1.0f);
-                float3 rpos = ray_origin + ray_direction * (ray_query.CommittedRayT() - 1.0e-4f);
+                float3 rpos = ray_origin + ray_direction * ray_query.CommittedRayT() + normal * 1.0e-3f; 
 
                 RayDesc ray_desc                = (RayDesc)0;
                 ray_desc.Direction              = normalize(float3(0.0, 1.0, 1.0));
@@ -478,10 +535,11 @@ class MainWindow:
                 ray_query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xffu, ray_desc);
                 ray_query.Proceed();
 
+            
                 if (ray_query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
                     u0[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 1.0f);
                 } else {
-                    u0[DTid.xy] = float4(0.5f, 0.5f, 0.5f, 1.0f);
+                    u0[DTid.xy] = float4(max(0.0f, dot(normal, ray_desc.Direction)).xxx, 1.0f);
                 }
 
 
@@ -544,41 +602,6 @@ class MainWindow:
             optimizedClearValue = None
         )
 
-        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
-
-        self.device.CreateUnorderedAccessView(
-            Resource = self.uav_texture,
-            Desc = native.D3D12_UNORDERED_ACCESS_VIEW_DESC(
-                Format = native.DXGI_FORMAT.R16G16B16A16_FLOAT,
-                Texture2D = native.D3D12_TEX2D_UAV(
-                    MipSlice = 0,
-                    PlaneSlice = 0
-                )
-            ),
-            DestDescriptor = cpu_handle,
-            CounterResource = None
-        )
-        self.uav_texture_gpu_descritpor = gpu_handle
-
-
-        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
-
-        self.device.CreateShaderResourceView(
-            Resource = self.uav_texture,
-            Desc = native.D3D12_SHADER_RESOURCE_VIEW_DESC(
-                Format = native.DXGI_FORMAT.R16G16B16A16_FLOAT,
-                Shader4ComponentMapping = native.D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-                Texture2D = native.D3D12_TEX2D_SRV(
-                    MipLevels = 1,
-                    MostDetailedMip = 0,
-                    PlaneSlice = 0,
-                    ResourceMinLODClamp = 0.0
-                )
-            ),
-            DestDescriptor = cpu_handle
-        )
-        self.srv_texture_srv_gpu_descritpor = gpu_handle
-
         cmd_queue = self.device.CreateCommandQueue(native.D3D12_COMMAND_QUEUE_DESC(
             Type = native.D3D12_COMMAND_LIST_TYPE.DIRECT,
             Priority = 0,
@@ -596,8 +619,24 @@ class MainWindow:
             for primitive in mesh.primitives:
                 cube_indices    = primitive.indices
                 cube_vertices   = primitive.attributes["POSITION"]
+                normals         = primitive.attributes.get("NORMAL", None)
+                texcoords       = primitive.attributes.get("TEXCOORD_0", None)
+                tangents        = primitive.attributes.get("TANGENT", None)
                 total_buffer_size += cube_vertices.size * ctypes.sizeof(GltfFloat3)
                 total_buffer_size  = (total_buffer_size + 255) & ~255
+
+                if normals is not None:
+                    total_buffer_size += normals.size * ctypes.sizeof(GltfFloat3)
+                    total_buffer_size  = (total_buffer_size + 255) & ~255
+                
+                if texcoords is not None:
+                    total_buffer_size += texcoords.size * ctypes.sizeof(GltfFloat2)
+                    total_buffer_size  = (total_buffer_size + 255) & ~255
+                
+                if tangents is not None:
+                    total_buffer_size += tangents.size * ctypes.sizeof(GltfFloat4)
+                    total_buffer_size  = (total_buffer_size + 255) & ~255
+
                 total_buffer_size += cube_indices.size * ctypes.sizeof(ctypes.c_uint32)
                 total_buffer_size  = (total_buffer_size + 255) & ~255
             
@@ -606,25 +645,63 @@ class MainWindow:
 
         cur_buffer_offset = 0
 
+        self.shader_geometry_descs = []
+
         for mesh in self.gltf_scene.meshes:
             for primitive in mesh.primitives:
                 cube_indices    = primitive.indices
                 assert cube_indices.dtype == GltfUint32
                 cube_vertices   = primitive.attributes["POSITION"]
+                normals         = primitive.attributes.get("NORMAL", None)
+                texcoords       = primitive.attributes.get("TEXCOORD_0", None)
+                tangents        = primitive.attributes.get("TANGENT", None)
 
-                index_offset = 0
-                vertex_offset = 0
+                index_offset_dwords        = 0xffffffff
+                vertex_offset_dwords       = 0xffffffff
+                normal_offset_dwords       = 0xffffffff
+                texcoord_offset_dwords     = 0xffffffff
+                tangent_offset_dwords      = 0xffffffff
+                indices_offset_dwords      = 0xffffffff
 
-                vertex_offset = cur_buffer_offset
+
+                vertex_offset_dwords = cur_buffer_offset // 4
                 ctypes.memmove(mapped_ptr + cur_buffer_offset, cube_vertices.ctypes.data, cube_vertices.size * ctypes.sizeof(GltfFloat3))
                 cur_buffer_offset += cube_vertices.size * ctypes.sizeof(GltfFloat3)
-                cur_buffer_offset  = (cur_buffer_offset + 255) & ~255
+                cur_buffer_offset  = (cur_buffer_offset + 255) & ~255 # align to 256 bytes
                 
-                index_offset = cur_buffer_offset
+                if normals is not None:
+                    normal_offset_dwords = cur_buffer_offset // 4
+                    ctypes.memmove(mapped_ptr + cur_buffer_offset, normals.ctypes.data, normals.size * ctypes.sizeof(GltfFloat3))
+                    cur_buffer_offset += normals.size * ctypes.sizeof(GltfFloat3)
+                    cur_buffer_offset  = (cur_buffer_offset + 255) & ~255 # align to 256 bytes
+
+                if texcoords is not None:
+                    texcoord_offset_dwords = cur_buffer_offset // 4
+                    ctypes.memmove(mapped_ptr + cur_buffer_offset, texcoords.ctypes.data, texcoords.size * ctypes.sizeof(GltfFloat2))
+                    cur_buffer_offset += texcoords.size * ctypes.sizeof(GltfFloat2)
+                    cur_buffer_offset  = (cur_buffer_offset + 255) & ~255
+
+                if tangents is not None:
+                    tangent_offset_dwords = cur_buffer_offset // 4
+                    ctypes.memmove(mapped_ptr + cur_buffer_offset, tangents.ctypes.data, tangents.size * ctypes.sizeof(GltfFloat4))
+                    cur_buffer_offset += tangents.size * ctypes.sizeof(GltfFloat4)
+                    cur_buffer_offset  = (cur_buffer_offset + 255) & ~255
+
+                indices_offset_dwords = cur_buffer_offset // 4
                 ctypes.memmove(mapped_ptr + cur_buffer_offset, cube_indices.ctypes.data, cube_indices.size * ctypes.sizeof(ctypes.c_uint32))
                 cur_buffer_offset += cube_indices.size * ctypes.sizeof(ctypes.c_uint32)
-                cur_buffer_offset  = (cur_buffer_offset + 255) & ~255
+                cur_buffer_offset  = (cur_buffer_offset + 255) & ~255 # align to 256 bytes
                 
+                self.shader_geometry_descs.append(
+                    GeometryDesc(
+                        flags = 0,
+                        position_offset_dwords = vertex_offset_dwords,
+                        normals_offset_dwords = normal_offset_dwords,
+                        texcoord_offset_dwords = texcoord_offset_dwords,
+                        tangent_offset_dwords = tangent_offset_dwords,
+                        indices_offset_dwords = indices_offset_dwords
+                    )
+                )
 
                 geometry_descs.append(native.D3D12_RAYTRACING_GEOMETRY_DESC(
                     Flags = native.D3D12_RAYTRACING_GEOMETRY_FLAGS.OPAQUE,
@@ -634,14 +711,21 @@ class MainWindow:
                         VertexFormat               = native.DXGI_FORMAT.R32G32B32_FLOAT,
                         IndexCount                 = cube_indices.size,
                         VertexCount                = cube_vertices.size,
-                        IndexBuffer                = mega_buffer.GetGPUVirtualAddress() + index_offset,
+                        IndexBuffer                = mega_buffer.GetGPUVirtualAddress() + indices_offset_dwords * 4,
                         VertexBuffer               = native.D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE(
-                            StartAddress             = mega_buffer.GetGPUVirtualAddress() + vertex_offset,
+                            StartAddress             = mega_buffer.GetGPUVirtualAddress() + vertex_offset_dwords * 4,
                             StrideInBytes            = ctypes.sizeof(GltfFloat3)
                         ),
                     )
                 ))
 
+
+        self.shader_geometry_descs_buffer = make_write_combined_buffer(self.device, size=len(self.shader_geometry_descs) * ctypes.sizeof(GeometryDesc))
+        mapped_ptr = self.shader_geometry_descs_buffer.Map()
+        array = (GeometryDesc * len(self.shader_geometry_descs)).from_address(mapped_ptr)
+        for i in range(len(self.shader_geometry_descs)):
+            array[i] = self.shader_geometry_descs[i]
+        self.shader_geometry_descs_buffer.Unmap()
 
         as_inputs = native.D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS(
             Flags = native.D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS.PREFER_FAST_TRACE | native.D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS.ALLOW_UPDATE,
@@ -724,7 +808,85 @@ class MainWindow:
         cmd_queue.Signal(fence, 1)
         e.Wait()
 
+        # !Descriptor heap
+        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
+
+        self.device.CreateUnorderedAccessView(
+            Resource = self.uav_texture,
+            Desc = native.D3D12_UNORDERED_ACCESS_VIEW_DESC(
+                Format = native.DXGI_FORMAT.R16G16B16A16_FLOAT,
+                Texture2D = native.D3D12_TEX2D_UAV(
+                    MipSlice = 0,
+                    PlaneSlice = 0
+                )
+            ),
+            DestDescriptor = cpu_handle,
+            CounterResource = None
+        )
+        self.descriptor_table = gpu_handle
+
+        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
+    
+        self.device.CreateShaderResourceView(
+            Resource = None,
+            Desc = native.D3D12_SHADER_RESOURCE_VIEW_DESC(
+               RaytracingAccelerationStructure = native.D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV(
+                   Location = tlas_result_buffer.GetGPUVirtualAddress()
+               )
+            ),
+            DestDescriptor = cpu_handle
+        )
+
+        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
+
+        self.device.CreateShaderResourceView(
+            Resource = self.uav_texture,
+            Desc = native.D3D12_SHADER_RESOURCE_VIEW_DESC(
+                Format = native.DXGI_FORMAT.R16G16B16A16_FLOAT,
+                Shader4ComponentMapping = native.D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                Texture2D = native.D3D12_TEX2D_SRV(
+                    MipLevels = 1,
+                    MostDetailedMip = 0,
+                    PlaneSlice = 0,
+                    ResourceMinLODClamp = 0.0
+                )
+            ),
+            DestDescriptor = cpu_handle
+        )
+        self.srv_texture_srv_gpu_descritpor = gpu_handle
+
+        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
+        self.device.CreateShaderResourceView(
+            Resource = mega_buffer,
+            Desc = native.D3D12_SHADER_RESOURCE_VIEW_DESC(
+                Format = native.DXGI_FORMAT.R32_TYPELESS,
+                Buffer = native.D3D12_BUFFER_SRV(
+                    FirstElement = 0,
+                    NumElements = mega_buffer.GetDesc().Width // 4,
+                    StructureByteStride = 0,
+                    Flags = native.D3D12_BUFFER_SRV_FLAGS.RAW
+                )
+            ),
+            DestDescriptor = cpu_handle
+        )
+
+        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
+        self.device.CreateShaderResourceView(
+            Resource = self.shader_geometry_descs_buffer,
+            Desc = native.D3D12_SHADER_RESOURCE_VIEW_DESC(
+                Format = native.DXGI_FORMAT.R32_TYPELESS,
+                Buffer = native.D3D12_BUFFER_SRV(
+                    FirstElement = 0,
+                    NumElements = self.shader_geometry_descs_buffer.GetDesc().Width // 4,
+                    StructureByteStride = 0,
+                    Flags = native.D3D12_BUFFER_SRV_FLAGS.RAW
+                )
+            ),
+            DestDescriptor = cpu_handle
+        )
+
         # keep references
+        self.mega_buffer        = mega_buffer
         self.tlas_result_buffer = tlas_result_buffer
         self.blas_result_buffer = blas_result_buffer
 
@@ -801,11 +963,7 @@ class MainWindow:
         cmd_list.SetDescriptorHeaps([self.cbv_srv_uav_heap.heap])
         cmd_list.SetComputeRootDescriptorTable(
             RootParameterIndex  = 0,
-            BaseDescriptor      = self.uav_texture_gpu_descritpor
-        )
-        cmd_list.SetComputeRootShaderResourceView(
-            RootParameterIndex  = 1,
-            BufferLocation      = self.tlas_result_buffer.GetGPUVirtualAddress()
+            BaseDescriptor      = self.descriptor_table
         )
 
         cmd_list.Dispatch(window_width // 8, window_height // 8, 1)
