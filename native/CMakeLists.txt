@@ -35,6 +35,7 @@ add_custom_command(TARGET native POST_BUILD
 
 _add_module(rdoc src/rdoc.cpp)
 _add_module(pix src/pix.cpp)
+_add_module(blue_noise src/blue_noise.cpp)
 
 _add_module(imgui
     src/imgui_bindings_0.cpp

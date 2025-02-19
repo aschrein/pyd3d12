@@ -103,7 +103,7 @@ def make_write_combined_buffer(device, size, state = native.D3D12_RESOURCE_STATE
         res.SetName(name)
     return res
 
-def make_uav_buffer(device, size, state = native.D3D12_RESOURCE_STATES.UNORDERED_ACCESS, name = None):
+def make_uav_buffer(device, size, state = native.D3D12_RESOURCE_STATES.UNORDERED_ACCESS, name = None, initial_raw_ptr = None):
     res = device.CreateCommittedResource(
             heapProperties = native.D3D12_HEAP_PROPERTIES(
                 Type = native.D3D12_HEAP_TYPE.CUSTOM,
@@ -133,6 +133,35 @@ def make_uav_buffer(device, size, state = native.D3D12_RESOURCE_STATES.UNORDERED
         )
     if name is not None:
         res.SetName(name)
+
+    if initial_raw_ptr is not None:
+        upload_buffer = make_write_combined_buffer(device, size)
+        dst_data_ptr = upload_buffer.Map(0, None)
+        ctypes.memmove(dst_data_ptr, initial_raw_ptr, size)
+        upload_buffer.Unmap(0, None)
+
+        cmd_queue = device.CreateCommandQueue(native.D3D12_COMMAND_QUEUE_DESC(
+            Type = native.D3D12_COMMAND_LIST_TYPE.DIRECT,
+            Priority = 0,
+            Flags = native.D3D12_COMMAND_QUEUE_FLAGS.NONE,
+            NodeMask = 0
+        ))
+        fence = device.CreateFence(0, native.D3D12_FENCE_FLAGS.NONE)
+        cmd_alloc = device.CreateCommandAllocator(native.D3D12_COMMAND_LIST_TYPE.DIRECT)
+        cmd_list = device.CreateCommandList(NodeMask=0, Type=native.D3D12_COMMAND_LIST_TYPE.DIRECT, Allocator=cmd_alloc)
+
+        cmd_list.CopyBufferRegion(res, 0, upload_buffer, 0, size)
+
+        cmd_list.Close()
+
+        e = native.Event()
+        fence.SetEventOnCompletion(1, e)
+        cmd_queue.ExecuteCommandLists([cmd_list])
+        cmd_queue.Signal(fence, 1)
+        e.Wait()
+
+        del upload_buffer
+    
     return res
 
 def make_texture_from_dds(device, dds : DDSTexture):

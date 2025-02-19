@@ -45,6 +45,7 @@ from py.pix import *
 from py.gltf import *
 from py.imgui import *
 from py.linalg import *
+from py.blue_noise import *
 
 launch_debugviewpp()
 
@@ -86,7 +87,7 @@ class CBuffer(ctypes.Structure):
         ("frustum_z", ctypes.c_float * 3),
         ("pad_0", ctypes.c_float),
         ("camera_pos", ctypes.c_float * 3),
-        ("pad_1", ctypes.c_float),
+        ("frame_idx", ctypes.c_uint)
 
     ]
 
@@ -219,6 +220,34 @@ class MainWindow:
         cbuffer_ptr = self.cbuffer_wb.Map()
         self.cbuffer_wb_arr = (CBuffer * 3).from_address(cbuffer_ptr)
         
+        # Create blue noise sampler buffers
+        sobol_ptr                   = blue_noise._128x128_2d2d2d2d_256spp_sobol_ptr()
+        sobol_size_bytes            = blue_noise._128x128_2d2d2d2d_256spp_sobol_size_bytes()
+        scrambling_tile_ptr         = blue_noise._128x128_2d2d2d2d_256spp_scrambling_tile_ptr()
+        scrambling_tile_size_bytes  = blue_noise._128x128_2d2d2d2d_256spp_scrambling_tile_size_bytes()
+        ranking_tile_ptr            = blue_noise._128x128_2d2d2d2d_256spp_ranking_tile_ptr()
+        ranking_tile_size_bytes     = blue_noise._128x128_2d2d2d2d_256spp_ranking_tile_size_bytes()
+
+        self.sobol_buffer = make_uav_buffer(self.device,
+                                            size=sobol_size_bytes,
+                                            state=native.D3D12_RESOURCE_STATES.UNORDERED_ACCESS,
+                                            name="sobol_buffer",
+                                            initial_raw_ptr=sobol_ptr)
+    
+        self.scrambling_tile_buffer = make_uav_buffer(self.device,
+                                            size=scrambling_tile_size_bytes,
+                                            state=native.D3D12_RESOURCE_STATES.UNORDERED_ACCESS,
+                                            name="scrambling_tile_buffer",
+                                            initial_raw_ptr=scrambling_tile_ptr)
+        
+        self.ranking_tile_buffer = make_uav_buffer(self.device,
+                                            size=ranking_tile_size_bytes,
+                                            state=native.D3D12_RESOURCE_STATES.UNORDERED_ACCESS,
+                                            name="ranking_tile_buffer",
+                                            initial_raw_ptr=ranking_tile_ptr)
+
+
+
         self.command_queue = self.device.CreateCommandQueue(native.D3D12_COMMAND_QUEUE_DESC(
             Type = native.D3D12_COMMAND_LIST_TYPE.DIRECT,
             Priority = 0,
@@ -473,7 +502,10 @@ class MainWindow:
                     "SRV(t0, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=1), " \
                     "SRV(t1, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=2), " \
                     "SRV(t2, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=3), " \
-                    "SRV(t3, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=4) " \
+                    "SRV(t3, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=4), " \
+                    "SRV(t4, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=5), " \
+                    "SRV(t5, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=6), " \
+                    "SRV(t6, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=7) " \
                     "), " \
                     "CBV(b0, visibility = SHADER_VISIBILITY_ALL, space = 0), " \
                     "UAV(u0, space = 2147420894), " \
@@ -496,7 +528,7 @@ class MainWindow:
             float3 frustum_z;
             float pad_0;
             float3 camera_pos;
-            float pad_1;
+            uint frame_idx;
         };
 
         ConstantBuffer<Cbuffer> b0 : register(b0);
@@ -506,6 +538,10 @@ class MainWindow:
         RaytracingAccelerationStructure tlas : register(t0);
         ByteAddressBuffer attributes : register(t2);
         ByteAddressBuffer geometry_descs : register(t3);
+
+        ByteAddressBuffer sobol_buffer : register(t4);
+        ByteAddressBuffer scrambling_tile_buffer : register(t5);
+        ByteAddressBuffer ranking_tile_buffer : register(t6);
 
         struct GeometryDesc {
             uint flags;
@@ -577,6 +613,49 @@ class MainWindow:
             return col;
         }
 
+        
+        // Blue Noise Sampler by Eric Heitz. Returns a value in the range [0, 1].
+        static float SampleRandomNumber(uint pixel_i, uint pixel_j, uint sample_index, uint sample_dimension, uint samples_per_pixel) {
+            // Wrap arguments
+            pixel_i = pixel_i & 127u;
+            pixel_j = pixel_j & 127u;
+            sample_index = (sample_index % samples_per_pixel) & 255u;
+            sample_dimension = sample_dimension & 255u;
+
+        #ifndef SPP
+        #    define SPP 256
+        #endif
+
+        #if SPP == 1
+            const uint ranked_sample_index = sample_index ^ 0;
+        #else
+            // xor index based on optimized ranking
+            const uint ranked_sample_index = sample_index ^ ranking_tile_buffer.Load(4 * (sample_dimension + (pixel_i + pixel_j * 128u) * 8u));
+        #endif
+
+            // Fetch value in sequence
+            uint value = sobol_buffer.Load(4 * (sample_dimension + ranked_sample_index * 256u));
+
+            // If the dimension is optimized, xor sequence value based on optimized scrambling
+            value = value ^ scrambling_tile_buffer.Load(4 * ((sample_dimension % 8u) + (pixel_i + pixel_j * 128u) * 8u));
+
+            // Convert to float and return
+            return (value + 0.5f) / 256.0f;
+        }
+
+        static float3x3 GetTBN(float3 normal) {
+            float3 up = abs(normal.z) < 0.999 ? float3(0, 0, 1) : float3(1, 0, 0);
+            float3 tangent = normalize(cross(up, normal));
+            float3 bitangent = cross(normal, tangent);
+            return float3x3(tangent, bitangent, normal);
+        }
+
+        static float2 SampleRandomCircle(float2 xi) {
+            float r = sqrt(xi.x);
+            float theta = 2 * 3.14159265359 * xi.y;
+            return float2(r * cos(theta), r * sin(theta));
+        }
+
         [RootSignature(ROOT_SIGNATURE_MACRO)]
         [numthreads(8, 8, 1)]
         void main(uint3 DTid : SV_DispatchThreadID)
@@ -608,7 +687,6 @@ class MainWindow:
                 // const uint64_t start_clock = u32x2_to_u64(AmdExtD3DShaderIntrinsics_ShaderClock());
 
             #else // defined(AMD_AGS_ENABLED)
-                u0[DTid.xy] = float4(0.0f, 0.0f, 0.1f, 1.0f);
             #endif // defined(AMD_AGS_ENABLED)
 
             RayDesc ray_desc                = (RayDesc)0;
@@ -616,9 +694,19 @@ class MainWindow:
             ray_desc.Origin                 = ray_origin;
             ray_desc.TMin                   = float(0.0);
             ray_desc.TMax                   = float(1.0e6);
+
+            float4 xi = float4(
+                SampleRandomNumber(/* pixel_i */ DTid.x, /* pixel_j */DTid.y, /* sample_index */b0.frame_idx, /* sample_dimension */0, /* samples_per_pixel */64),
+                SampleRandomNumber(/* pixel_i */ DTid.x, /* pixel_j */DTid.y, /* sample_index */b0.frame_idx, /* sample_dimension */1, /* samples_per_pixel */64),
+                SampleRandomNumber(/* pixel_i */ DTid.x, /* pixel_j */DTid.y, /* sample_index */b0.frame_idx, /* sample_dimension */2, /* samples_per_pixel */64),
+                SampleRandomNumber(/* pixel_i */ DTid.x, /* pixel_j */DTid.y, /* sample_index */b0.frame_idx, /* sample_dimension */3, /* samples_per_pixel */64)
+            );
+
             RayQuery<RAY_FLAG_NONE> ray_query;
             ray_query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xffu, ray_desc);
             ray_query.Proceed();
+            float4 new_val = float4(0.0f, 0.0f, 0.0f, 1.0f);
+
             if (ray_query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
                 float2 bary         = ray_query.CommittedTriangleBarycentrics();
                 uint primitive_id   = ray_query.CommittedPrimitiveIndex();
@@ -636,13 +724,20 @@ class MainWindow:
                     float3 interpolation =float3(bary.x, bary.y, 1.0f - bary.x - bary.y);
                     float3 normal = normalize(normal_0 * interpolation.x + normal_1 * interpolation.y + normal_2 * interpolation.z);
 
+                    const float3 sun_dir = normalize(float3(0.0, 1.0, -1.0));
+
+                    const float3x3 sun_TBN = GetTBN(sun_dir);
+                    const float sun_len = 10.0f;
+                    const float2 random_circle = SampleRandomCircle(xi.xy);
+                    const float3 random_direction = normalize(sun_TBN[2] * sun_len + sun_TBN[0] * random_circle.x + sun_TBN[1] * random_circle.y);
+
                     float3 color = random_color(geo_id);
                     // u0[DTid.xy] = float4(bary.xy, 0.0f, 1.0f);
                     // u0[DTid.xy] = float4(bary.xyy * 0.5 + color * 0.5, 1.0f);
                     float3 rpos = ray_origin + ray_direction * ray_query.CommittedRayT() + normal * 1.0e-3f; 
 
                     RayDesc ray_desc                = (RayDesc)0;
-                    ray_desc.Direction              = normalize(float3(0.0, 1.0, 1.0));
+                    ray_desc.Direction              = random_direction;
                     ray_desc.Origin                 = rpos;
                     ray_desc.TMin                   = float(0.0);
                     ray_desc.TMax                   = float(1.0e6);
@@ -652,9 +747,10 @@ class MainWindow:
 
                 
                     if (ray_query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-                        u0[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 1.0f);
+                        new_val = float4(0.0f, 0.0f, 0.0f, 1.0f);
+                       
                     } else {
-                        u0[DTid.xy] = float4(max(0.0f, dot(normal, ray_desc.Direction)).xxx, 1.0f);
+                        new_val = float4(max(0.0f, dot(normal, ray_desc.Direction)).xxx, 1.0f);
                     }
 
                 #endif // defined(AMD_AGS_ENABLED)
@@ -663,10 +759,11 @@ class MainWindow:
                 #if defined(AMD_AGS_ENABLED)
                 
                 #else // defined(AMD_AGS_ENABLED)
-                    u0[DTid.xy] = float4(0.0f, 0.0f, 0.1f, 1.0f);
+                    new_val = float4(0.0f, 0.0f, 0.1f, 1.0f);
                 #endif // defined(AMD_AGS_ENABLED)
             }
 
+          
             #if defined(AMD_AGS_ENABLED)
                 // const uint64_t end_clock    = u32x2_to_u64(AmdExtD3DShaderIntrinsics_ShaderClock());
                 const uint64_t end_clock    = u32x2_to_u64(AmdExtD3DShaderIntrinsics_ShaderRealtimeClock());
@@ -675,6 +772,11 @@ class MainWindow:
                 u0[DTid.xy] = lerp(float4(heatmap(fdiff), 1.0f), u0[DTid.xy], 0.95);
                 
             #else // defined(AMD_AGS_ENABLED)
+                if (b0.frame_idx == 0) {
+                    u0[DTid.xy] = new_val;
+                } else {
+                    u0[DTid.xy] = lerp(new_val, u0[DTid.xy], 0.95);
+                }
             #endif // defined(AMD_AGS_ENABLED)
         }
         //!js
@@ -714,8 +816,8 @@ class MainWindow:
             resourceDesc = native.D3D12_RESOURCE_DESC(
                 Dimension = native.D3D12_RESOURCE_DIMENSION.TEXTURE2D,
                 Alignment = 0,
-                Width = 1 << 12,
-                Height = 1 << 12,
+                Width = 1 << 10,
+                Height = 1 << 10,
                 DepthOrArraySize = 1,
                 MipLevels = 1,
                 Format = native.DXGI_FORMAT.R16G16B16A16_FLOAT,
@@ -1012,6 +1114,51 @@ class MainWindow:
             ),
             DestDescriptor = cpu_handle
         )
+        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
+        self.device.CreateShaderResourceView(
+            Resource = self.sobol_buffer,
+            Desc = native.D3D12_SHADER_RESOURCE_VIEW_DESC(
+                Format = native.DXGI_FORMAT.R32_TYPELESS,
+                Buffer = native.D3D12_BUFFER_SRV(
+                    FirstElement = 0,
+                    NumElements = self.sobol_buffer.GetDesc().Width // 4,
+                    StructureByteStride = 0,
+                    Flags = native.D3D12_BUFFER_SRV_FLAGS.RAW
+                )
+            ),
+            DestDescriptor = cpu_handle
+        )
+
+        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
+        self.device.CreateShaderResourceView(
+            Resource = self.scrambling_tile_buffer,
+            Desc = native.D3D12_SHADER_RESOURCE_VIEW_DESC(
+                Format = native.DXGI_FORMAT.R32_TYPELESS,
+                Buffer = native.D3D12_BUFFER_SRV(
+                    FirstElement = 0,
+                    NumElements = self.scrambling_tile_buffer.GetDesc().Width // 4,
+                    StructureByteStride = 0,
+                    Flags = native.D3D12_BUFFER_SRV_FLAGS.RAW
+                )
+            ),
+            DestDescriptor = cpu_handle
+        )
+
+        cpu_handle, gpu_handle = self.cbv_srv_uav_heap.get_next_descriptor_handle()
+        self.device.CreateShaderResourceView(
+            Resource = self.ranking_tile_buffer,
+            Desc = native.D3D12_SHADER_RESOURCE_VIEW_DESC(
+                Format = native.DXGI_FORMAT.R32_TYPELESS,
+                Buffer = native.D3D12_BUFFER_SRV(
+                    FirstElement = 0,
+                    NumElements = self.ranking_tile_buffer.GetDesc().Width // 4,
+                    StructureByteStride = 0,
+                    Flags = native.D3D12_BUFFER_SRV_FLAGS.RAW
+                )
+            ),
+            DestDescriptor = cpu_handle
+        )
+
 
         # keep references
         self.mega_buffer        = mega_buffer
@@ -1125,6 +1272,7 @@ class MainWindow:
         self.cbuffer_wb_arr[back_buffer_idx].half_fov_tan   = camera.half_fov_tan
         self.cbuffer_wb_arr[back_buffer_idx].aspect         = camera.aspect
         self.cbuffer_wb_arr[back_buffer_idx].camera_pos     = (camera.pos.x, camera.pos.y, camera.pos.z)
+        self.cbuffer_wb_arr[back_buffer_idx].frame_idx      = self.frame_idx
 
         cmd_list.Dispatch(self.uav_texture.GetDesc().Width // 8, self.uav_texture.GetDesc().Height, 1)
 
