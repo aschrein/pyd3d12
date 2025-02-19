@@ -26,8 +26,11 @@ SOFTWARE.
 
 #include <d3dx12/d3dx12.h>
 #include <dxgi1_6.h>
+#include <iostream>
 #include <optional>
 #include <sstream>
+
+#include <ags_lib/inc/amd_ags.h>
 
 namespace py = pybind11;
 using namespace pybind11::literals;
@@ -1120,6 +1123,51 @@ static std::shared_ptr<ID3D12DeviceWrapper> CreateDevice(std::shared_ptr<IDXGIAd
     return std::make_shared<ID3D12DeviceWrapper>(device);
 }
 
+class AGSContextWrapper {
+public:
+    AGSContext *agsContext = nullptr;
+
+    AGSDX12ReturnedParams returned_params = {};
+
+public:
+    AGSContextWrapper() {
+        AGSGPUInfo    gpu_info = {};
+        AGSReturnCode rc       = agsInitialize(AGS_CURRENT_VERSION, (AGSConfiguration *)nullptr, &agsContext, &gpu_info);
+        if (rc != AGS_SUCCESS) {
+            std::cout << "Unable to initialize AGS: " << rc << std::endl;
+            return;
+        }
+    }
+
+    bool IsValid() { return agsContext != nullptr; }
+
+    std::shared_ptr<ID3D12DeviceWrapper> CreateDevice(std::shared_ptr<IDXGIAdapterWrapper> adapter, D3D_FEATURE_LEVEL featureLevel) {
+        AGSDX12DeviceCreationParams create_params = {};
+        create_params.pAdapter                    = adapter->adapter;
+        create_params.FeatureLevel                = featureLevel;
+        create_params.iid                         = __uuidof(ID3D12Device);
+
+        AGSDX12ExtensionParams extension_params = {};
+        extension_params.pAppName               = L"PyD3D12";
+        extension_params.pEngineName            = L"PyD3D12";
+        extension_params.uavSlot                = AGS_DX12_SHADER_INTRINSICS_SPACE_ID;
+
+        AGSReturnCode res = agsDriverExtensionsDX12_CreateDevice(agsContext, &create_params, &extension_params, &returned_params);
+
+        return std::make_shared<ID3D12DeviceWrapper>(returned_params.pDevice, /* own */ false);
+    }
+
+    AGSDX12ReturnedParams::ExtensionsSupported GetExtensionsSupported() { return returned_params.extensionsSupported; }
+
+    ~AGSContextWrapper() {
+        if (NULL != agsContext) {
+            agsDeInitialize(agsContext);
+        }
+    }
+};
+
+// static std::shared_ptr<ID3D12DeviceWrapper>
+
 static py::tuple GetWindowSize(uint64_t hwnd_int) {
     HWND hwnd = reinterpret_cast<HWND>(hwnd_int);
     RECT rect;
@@ -1164,6 +1212,27 @@ void export_d3d12_0(py::module &m) {
     m.def("square", &square);
     m.def("GetWindowSize", &GetWindowSize);
     m.def("IsDebuggerPresent", &_IsDebuggerPresent);
+
+    py::class_<AGSDX12ReturnedParams::ExtensionsSupported>(m, "AGSDX12ExtensionsSupported")
+        .def_property_readonly("intrinsics16", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.intrinsics16; })
+        .def_property_readonly("intrinsics17", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.intrinsics17; })
+        .def_property_readonly("userMarkers", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.userMarkers; })
+        .def_property_readonly("appRegistration", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.appRegistration; })
+        .def_property_readonly("UAVBindSlot", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.UAVBindSlot; })
+        .def_property_readonly("intrinsics19", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.intrinsics19; })
+        .def_property_readonly("baseVertex", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.baseVertex; })
+        .def_property_readonly("baseInstance", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.baseInstance; })
+        .def_property_readonly("getWaveSize", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.getWaveSize; })
+        .def_property_readonly("floatConversion", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.floatConversion; })
+        .def_property_readonly("readLaneAt", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.readLaneAt; })
+        .def_property_readonly("rayHitToken", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.rayHitToken; })
+        .def_property_readonly("shaderClock", [](const AGSDX12ReturnedParams::ExtensionsSupported &self) { return self.shaderClock; });
+
+    py::class_<AGSContextWrapper, std::shared_ptr<AGSContextWrapper>>(m, "AGSContext")
+        .def(py::init<>())
+        .def("IsValid", &AGSContextWrapper::IsValid)
+        .def("CreateDevice", &AGSContextWrapper::CreateDevice)
+        .def("GetExtensionsSupported", &AGSContextWrapper::GetExtensionsSupported);
 
     py::class_<ID3D12SDKConfigurationWrapper, std::shared_ptr<ID3D12SDKConfigurationWrapper>>(m, "ID3D12SDKConfiguration")
         .def(py::init<>())
@@ -2908,7 +2977,8 @@ void export_d3d12_0(py::module &m) {
                  desc.RaytracingAccelerationStructure = RaytracingAccelerationStructure;
                  return desc;
              }),
-             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, "RaytracingAccelerationStructure"_a = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV{}) //
+             "Format"_a = DXGI_FORMAT_UNKNOWN, "Shader4ComponentMapping"_a = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+             "RaytracingAccelerationStructure"_a = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV{}) //
         ;
     py::enum_<D3D12_BUFFER_UAV_FLAGS>(m, "D3D12_BUFFER_UAV_FLAGS", py::arithmetic()) //
         .value("NONE", D3D12_BUFFER_UAV_FLAG_NONE)                                   //

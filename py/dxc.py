@@ -33,8 +33,15 @@ class DXCContext:
         dxc_version = os.environ.get("DXC_VERSION", "dxc_2024_07_31")
         self.dxc_path = bin_folder / dxc_version / "bin/x64/dxc.exe"
         self.tmp_path = get_or_create_tmp_folder() / "dxc"
+        self.include_paths = []
+        self.default_args = ["-HV", "2021", "-enable-16bit-types"]
         os.makedirs(self.tmp_path, exist_ok=True)
         pass
+
+    def add_include_path(self, path):
+        self.include_paths.append("-I")
+        self.include_paths.append(str(path))
+        return self
 
     def compile_to_dxil(self, source, args):
         if isinstance(source, Path):
@@ -50,8 +57,8 @@ class DXCContext:
         source_file.write(source)
         source_file.close()
 
-        args = [str(self.dxc_path)] + args + [str(self.tmp_path / f"{_hash}.hlsl"), "/Fo", str(dst)]
-        # print(f"args = {args}")
+        args = [str(self.dxc_path)] + self.include_paths + self.default_args + args + [str(self.tmp_path / f"{_hash}.hlsl"), "/Fo", str(dst)]
+        print(f"args = {args}")
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         # process.stdin.write(source.encode())

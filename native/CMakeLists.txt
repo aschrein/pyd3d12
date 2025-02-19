@@ -13,11 +13,6 @@ function(_add_module module_name)
             ${THIRD_PARTY_DIR}
         )
 
-    target_link_libraries(${module_name}
-            PRIVATE
-            dxgi
-            d3d12
-        )
 
     install(TARGETS ${module_name} LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/${module_name})
 endfunction()
@@ -26,6 +21,16 @@ endfunction()
 _add_module(native
     src/lib.cpp
     src/d3d12_bindings_0.cpp
+)
+target_link_libraries(native PRIVATE 
+    dxgi
+    d3d12
+    ${THIRD_PARTY_DIR}/ags_lib/lib/amd_ags_x64.lib
+)
+add_custom_command(TARGET native POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${THIRD_PARTY_DIR}/ags_lib/lib/amd_ags_x64.dll
+    "$<TARGET_FILE_DIR:native>/amd_ags_x64.dll"
 )
 
 _add_module(rdoc src/rdoc.cpp)

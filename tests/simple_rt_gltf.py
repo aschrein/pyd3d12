@@ -32,6 +32,7 @@ args = argparse.ArgumentParser()
 args.add_argument("--build", type=str, default="Release")
 args.add_argument("--wait_for_debugger_present", action="store_true")
 args.add_argument("--load_rdoc", action="store_true")
+args.add_argument("--enable_shader_clock", action="store_true")
 args.add_argument("--load_pix", action="store_true")
 args.add_argument("--gltf_scene_path", type=str )
 args = args.parse_args()
@@ -43,6 +44,7 @@ from py.d3d12 import *
 from py.pix import *
 from py.gltf import *
 from py.imgui import *
+from py.linalg import *
 
 launch_debugviewpp()
 
@@ -73,8 +75,39 @@ class GeometryDesc(ctypes.Structure):
         ("texcoord_offset_dwords", ctypes.c_uint),
         ("tangent_offset_dwords", ctypes.c_uint),
         ("indices_offset_dwords", ctypes.c_uint)
+    ]
+
+class CBuffer(ctypes.Structure):
+    _fields_ = [
+        ("frustum_x", ctypes.c_float * 3),
+        ("aspect", ctypes.c_float),
+        ("frustum_y", ctypes.c_float * 3),
+        ("half_fov_tan", ctypes.c_float),
+        ("frustum_z", ctypes.c_float * 3),
+        ("pad_0", ctypes.c_float),
+        ("camera_pos", ctypes.c_float * 3),
+        ("pad_1", ctypes.c_float),
 
     ]
+
+camera = Camera()
+# camera.y_is_up = False
+
+import json
+
+try:
+    with open(get_or_create_tmp_folder() / "camera.json", "r") as f:
+        camera.from_json(json.load(f))
+except:
+    pass
+
+# register on close
+def on_close():
+    with open(get_or_create_tmp_folder() / "camera.json", "w") as f:
+        json.dump(camera.to_json(), f)
+
+
+key_press_map = {}
 
 class ChildWidget(qtw.QWidget):
     def __init__(self, parent=None):
@@ -83,9 +116,19 @@ class ChildWidget(qtw.QWidget):
         self.setStyleSheet("background-color: lightgray;")  # for visibility
         self.imgui_ctx = None # set later
 
+        self.mouse_pressed = [False, False, False]
+        self.mouse_last = (0, 0)
+
     def mouseMoveEvent(self, event):
         # print("Child widget mouse move:", event.pos())
         self.imgui_ctx.ctx.OnMouseMotion(event.pos().x(), event.pos().y())
+
+        mouse_delta     = (event.pos().x() - self.mouse_last[0], event.pos().y() - self.mouse_last[1])
+        self.mouse_last = (event.pos().x(), event.pos().y())
+        if self.mouse_pressed[0]:
+            camera.phi   += mouse_delta[0] * 0.01
+            camera.theta -= mouse_delta[1] * 0.01
+
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event):
@@ -95,7 +138,8 @@ class ChildWidget(qtw.QWidget):
         if event.button() == Qt.LeftButton: key = 0
         if event.button() == Qt.RightButton: key = 1
         if event.button() == Qt.MiddleButton: key = 2
-
+        self.mouse_pressed[key] = True
+        self.mouse_last = (event.pos().x(), event.pos().y())
         self.imgui_ctx.ctx.OnMouseMotion(event.pos().x(), event.pos().y())
         self.imgui_ctx.ctx.OnMousePress(key)
         super().mousePressEvent(event)
@@ -107,7 +151,8 @@ class ChildWidget(qtw.QWidget):
         if event.button() == Qt.LeftButton: key = 0
         if event.button() == Qt.RightButton: key = 1
         if event.button() == Qt.MiddleButton: key = 2
-
+        self.mouse_pressed[key] = False
+        self.mouse_last = (event.pos().x(), event.pos().y())
         self.imgui_ctx.ctx.OnMouseMotion(event.pos().x(), event.pos().y())
         self.imgui_ctx.ctx.OnMouseRelease(key)
         super().mouseReleaseEvent(event)
@@ -121,19 +166,33 @@ class ChildWidget(qtw.QWidget):
         super().leaveEvent(event)
     
     def keyPressEvent(self, event):
-        # print("Key pressed:", event.key())
+        print("Key pressed:", event.key())
+
+        key_press_map[event.key()] = True
+
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
-        # print("Key released:", event.key())
+        
+        key_press_map[event.key()] = False
+
+        print("Key released:", event.key())
         super().keyReleaseEvent(event)
+
+    def closeEvent(self, event):
+        self.render_timer.stop()  # Stop further rendering
+        on_close()
+        print_red("Closing window")
+        event.accept()
+
 
 class MainWindow:
     def __init__(self):
-        self.window = qtw.QMainWindow()
-        self.child = ChildWidget(self.window)
+        self.window     = qtw.QMainWindow()
+        self.child      = ChildWidget(self.window)
         self.window.setCentralWidget(self.child)
         self.child.setGeometry(50, 50, 1024, 1024)
+        self.child.setFocusPolicy(Qt.StrongFocus)
 
         self.window.setWindowTitle("Simple Window")
         self.window.setGeometry(100, 100, 1024, 1024)
@@ -142,14 +201,24 @@ class MainWindow:
 
         windth, height = native.GetWindowSize(self.hwnd)
 
-        factory = native.IDXGIFactory()
-        adapters = factory.EnumAdapters()
+        factory         = native.IDXGIFactory()
+        adapters        = factory.EnumAdapters()
         print(f"Adapter: {adapters[0].GetDesc().Description}")
         self.factory = factory
-        self.device = native.CreateDevice(adapters[0], native.D3D_FEATURE_LEVEL._11_0)
+        self.ags_context = native.AGSContext()
+        if self.ags_context.IsValid():
+            print_green("AGS Context is valid")
+            self.device = self.ags_context.CreateDevice(adapters[0], native.D3D_FEATURE_LEVEL._11_0)
+        else:
+            self.device = native.CreateDevice(adapters[0], native.D3D_FEATURE_LEVEL._11_0)
+        
         self.imgui_ctx = ImGuiContext(self.device, self.hwnd)
         self.child.imgui_ctx = self.imgui_ctx
 
+        self.cbuffer_wb = make_write_combined_buffer(self.device, size=ctypes.sizeof(CBuffer) * 3, state=native.D3D12_RESOURCE_STATES.VERTEX_AND_CONSTANT_BUFFER, name="CBuffer")
+        cbuffer_ptr = self.cbuffer_wb.Map()
+        self.cbuffer_wb_arr = (CBuffer * 3).from_address(cbuffer_ptr)
+        
         self.command_queue = self.device.CreateCommandQueue(native.D3D12_COMMAND_QUEUE_DESC(
             Type = native.D3D12_COMMAND_LIST_TYPE.DIRECT,
             Priority = 0,
@@ -183,11 +252,10 @@ class MainWindow:
                 Flags = native.DXGI_SWAP_CHAIN_FLAG.FRAME_LATENCY_WAITABLE_OBJECT
             )
         )
-        self.frame_idx = 0
-
-        self.fences = []
-        self.cmd_allocs = []
-        self.events = []
+        self.frame_idx      = 0
+        self.fences         = []
+        self.cmd_allocs     = []
+        self.events         = []
         for i in range(self.num_back_buffers):
             self.fences.append(self.device.CreateFence(0, native.D3D12_FENCE_FLAGS.NONE))
             self.events.append(native.Event())
@@ -198,6 +266,7 @@ class MainWindow:
             self.fences[i].Signal(1)
 
         self.dxc_ctx = DXCContext()
+        self.dxc_ctx.add_include_path(get_third_party_folder() / "ags_lib/hlsl")
         triangle_shader_text = """
 //js
             #define ROOT_SIGNATURE_MACRO \
@@ -391,9 +460,11 @@ class MainWindow:
 
         self.last_time = time.time()
 
-                
-        dxc_ctx = DXCContext()
-        bytecode = dxc_ctx.compile_to_dxil(
+        amd_ags_define = ""
+        if self.ags_context.IsValid() and args.enable_shader_clock:
+            amd_ags_define = "-D AMD_AGS_ENABLED"
+
+        bytecode = self.dxc_ctx.compile_to_dxil(
             source = """
         //js
         #define ROOT_SIGNATURE_MACRO \
@@ -404,6 +475,8 @@ class MainWindow:
                     "SRV(t2, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=3), " \
                     "SRV(t3, NumDescriptors = 1, flags = DESCRIPTORS_VOLATILE, offset=4) " \
                     "), " \
+                    "CBV(b0, visibility = SHADER_VISIBILITY_ALL, space = 0), " \
+                    "UAV(u0, space = 2147420894), " \
                     "StaticSampler(s0, " \
                         "Filter = FILTER_MIN_MAG_MIP_LINEAR, " \
                         "AddressU = TEXTURE_ADDRESS_WRAP, " \
@@ -411,6 +484,22 @@ class MainWindow:
                         "AddressW = TEXTURE_ADDRESS_WRAP), " \
                     "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), " \
 
+        #if defined(AMD_AGS_ENABLED)
+        #include "ags_shader_intrinsics_dx12.hlsl"
+        #endif //  defined(AMD_AGS_ENABLED)
+
+        struct Cbuffer {
+            float3 frustum_x;
+            float aspect;
+            float3 frustum_y;
+            float half_fov_tan;
+            float3 frustum_z;
+            float pad_0;
+            float3 camera_pos;
+            float pad_1;
+        };
+
+        ConstantBuffer<Cbuffer> b0 : register(b0);
 
         RWTexture2D<float4> u0 : register(u0);
 
@@ -430,7 +519,7 @@ class MainWindow:
         GeometryDesc LoadGeometryDesc(uint index) {
             GeometryDesc desc               = (GeometryDesc)0;
             uint4 pack0                     = geometry_descs.Load4(index * sizeof(GeometryDesc) + 0);
-            uint2 pack                       = geometry_descs.Load2(index * sizeof(GeometryDesc) + 16);
+            uint2 pack                      = geometry_descs.Load2(index * sizeof(GeometryDesc) + 16);
             desc.flags                      = pack0.x;
             desc.position_offset_dwords     = pack0.y;
             desc.normals_offset_dwords      = pack0.z;
@@ -473,30 +562,54 @@ class MainWindow:
             return float3((a & 0xff) / 255.0f, ((a >> 8) & 0xff) / 255.0f, ((a >> 16) & 0xff) / 255.0f);
         }
 
+        uint64_t u32x2_to_u64(uint2 v) {
+            return (uint64_t(v.y) << uint64_t(32)) | uint64_t(v.x);
+        }
+
+        // https://www.shadertoy.com/view/WslGRN
+        float3 heatmap(float t) {
+            t = saturate(t);
+            float level = t * 3.14159265/2.;
+            float3 col;
+            col.r = sin(level);
+            col.g = sin(level*2.);
+            col.b = cos(level);
+            return col;
+        }
+
         [RootSignature(ROOT_SIGNATURE_MACRO)]
         [numthreads(8, 8, 1)]
         void main(uint3 DTid : SV_DispatchThreadID)
         {
             uint2 dims;
             u0.GetDimensions(dims.x, dims.y);
-            float2 uv = (float2(DTid.xy) + 0.5f) / float2(dims.xy); 
+            float2 uv   = (float2(DTid.xy) + 0.5f) / float2(dims.xy); 
+            float2 ndc  = uv.xy * 2.0f - 1.0f;
 
-            float t = 0.2f * 3.14159265359f * 0.333f;
-            float camera_radius     = 1144.0f;
-            float3 camera_pos       = float3(sin(t) * camera_radius, cos(t) * camera_radius, 422.0f);
-            float3 camera_look_at   = float3(0.0f, 0.0f, 0.0f);
-            float3 camera_look      = normalize(camera_look_at - camera_pos);
-            float3 camera_up        = float3(0.0f, 0.0f, 1.0f);
-            float3 camera_right     = normalize(cross(camera_look, camera_up));
-            camera_up               = normalize(cross(camera_look, camera_right));
+            // float t = 0.2f * 3.14159265359f * 0.333f;
+            // float camera_radius     = 1144.0f;
+            // float3 camera_pos       = float3(sin(t) * camera_radius, cos(t) * camera_radius, 422.0f);
+            // float3 camera_look_at   = float3(0.0f, 0.0f, 0.0f);
+            // float3 camera_look      = normalize(camera_look_at - camera_pos);
+            // float3 camera_up        = float3(0.0f, 0.0f, 1.0f);
+            // float3 camera_right     = normalize(cross(camera_look, camera_up));
+            // camera_up               = normalize(cross(camera_look, camera_right));
+            // float3 ray_origin       = camera_pos + camera_right * 550.0f;
+            // float fov               = 3.14159265359f / 2.0f;
+            // float aspect_ratio      = 1.0f;
+            // float fov_tan           = tan(fov * 0.5f);
+            // float3 ray_direction    = normalize(camera_look + ndc.x * camera_right * aspect_ratio * fov_tan + ndc.y * camera_up * fov_tan);
 
-            float3 ray_origin       = camera_pos + camera_right * 550.0f;
-            float fov               = 3.14159265359f / 2.0f;
-            float aspect_ratio      = 1.0f;
-            float fov_tan           = tan(fov * 0.5f);
-            float2 ndc              = uv.xy * 2.0f - 1.0f;
-            float3 ray_direction    = normalize(camera_look + ndc.x * camera_right * aspect_ratio * fov_tan + ndc.y * camera_up * fov_tan);
+            const float3 ray_origin     = b0.camera_pos;
+            const float3 ray_direction  = normalize(b0.frustum_x * ndc.x + -b0.frustum_y * ndc.y + b0.frustum_z * b0.half_fov_tan);
 
+            #if defined(AMD_AGS_ENABLED)
+                const uint64_t start_clock = u32x2_to_u64(AmdExtD3DShaderIntrinsics_ShaderRealtimeClock());
+                // const uint64_t start_clock = u32x2_to_u64(AmdExtD3DShaderIntrinsics_ShaderClock());
+
+            #else // defined(AMD_AGS_ENABLED)
+                u0[DTid.xy] = float4(0.0f, 0.0f, 0.1f, 1.0f);
+            #endif // defined(AMD_AGS_ENABLED)
 
             RayDesc ray_desc                = (RayDesc)0;
             ray_desc.Direction              = ray_direction;
@@ -510,48 +623,63 @@ class MainWindow:
                 float2 bary         = ray_query.CommittedTriangleBarycentrics();
                 uint primitive_id   = ray_query.CommittedPrimitiveIndex();
                 uint geo_id         = ray_query.CommittedGeometryIndex();
+                #if defined(AMD_AGS_ENABLED)
+                    if (primitive_id == 0xdeadbeef) return; // Fake condition to avoid optimization
+                #else // defined(AMD_AGS_ENABLED)
+                    GeometryDesc desc   = LoadGeometryDesc(geo_id);
+                    uint3 indices       = LoadTriangleIndicesU32x3(desc.indices_offset_dwords * 4 + primitive_id * 12);
 
-                GeometryDesc desc   = LoadGeometryDesc(geo_id);
-                uint3 indices       = LoadTriangleIndicesU32x3(desc.indices_offset_dwords * 4 + primitive_id * 12);
+                    float3 normal_0       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.x * 12);
+                    float3 normal_1       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.y * 12);
+                    float3 normal_2       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.z * 12);
 
-                float3 normal_0       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.x * 12);
-                float3 normal_1       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.y * 12);
-                float3 normal_2       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.z * 12);
+                    float3 interpolation =float3(bary.x, bary.y, 1.0f - bary.x - bary.y);
+                    float3 normal = normalize(normal_0 * interpolation.x + normal_1 * interpolation.y + normal_2 * interpolation.z);
 
-                float3 interpolation =float3(bary.x, bary.y, 1.0f - bary.x - bary.y);
-                float3 normal = normalize(normal_0 * interpolation.x + normal_1 * interpolation.y + normal_2 * interpolation.z);
+                    float3 color = random_color(geo_id);
+                    // u0[DTid.xy] = float4(bary.xy, 0.0f, 1.0f);
+                    // u0[DTid.xy] = float4(bary.xyy * 0.5 + color * 0.5, 1.0f);
+                    float3 rpos = ray_origin + ray_direction * ray_query.CommittedRayT() + normal * 1.0e-3f; 
 
-                float3 color = random_color(geo_id);
-                // u0[DTid.xy] = float4(bary.xy, 0.0f, 1.0f);
-                // u0[DTid.xy] = float4(bary.xyy * 0.5 + color * 0.5, 1.0f);
-                float3 rpos = ray_origin + ray_direction * ray_query.CommittedRayT() + normal * 1.0e-3f; 
+                    RayDesc ray_desc                = (RayDesc)0;
+                    ray_desc.Direction              = normalize(float3(0.0, 1.0, 1.0));
+                    ray_desc.Origin                 = rpos;
+                    ray_desc.TMin                   = float(0.0);
+                    ray_desc.TMax                   = float(1.0e6);
+                    RayQuery<RAY_FLAG_NONE> ray_query;
+                    ray_query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xffu, ray_desc);
+                    ray_query.Proceed();
 
-                RayDesc ray_desc                = (RayDesc)0;
-                ray_desc.Direction              = normalize(float3(0.0, 1.0, 1.0));
-                ray_desc.Origin                 = rpos;
-                ray_desc.TMin                   = float(0.0);
-                ray_desc.TMax                   = float(1.0e6);
-                RayQuery<RAY_FLAG_NONE> ray_query;
-                ray_query.TraceRayInline(tlas, RAY_FLAG_NONE, 0xffu, ray_desc);
-                ray_query.Proceed();
+                
+                    if (ray_query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                        u0[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 1.0f);
+                    } else {
+                        u0[DTid.xy] = float4(max(0.0f, dot(normal, ray_desc.Direction)).xxx, 1.0f);
+                    }
 
-            
-                if (ray_query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-                    u0[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 1.0f);
-                } else {
-                    u0[DTid.xy] = float4(max(0.0f, dot(normal, ray_desc.Direction)).xxx, 1.0f);
-                }
-
+                #endif // defined(AMD_AGS_ENABLED)
 
             } else {
-                u0[DTid.xy] = float4(0.0f, 0.0f, 0.1f, 1.0f);
+                #if defined(AMD_AGS_ENABLED)
+                
+                #else // defined(AMD_AGS_ENABLED)
+                    u0[DTid.xy] = float4(0.0f, 0.0f, 0.1f, 1.0f);
+                #endif // defined(AMD_AGS_ENABLED)
             }
-        
-        }
 
+            #if defined(AMD_AGS_ENABLED)
+                // const uint64_t end_clock    = u32x2_to_u64(AmdExtD3DShaderIntrinsics_ShaderClock());
+                const uint64_t end_clock    = u32x2_to_u64(AmdExtD3DShaderIntrinsics_ShaderRealtimeClock());
+                const uint64_t diff         = end_clock - start_clock;
+                const float fdiff           = log(float(diff) / 31000.0 + 1.0);
+                u0[DTid.xy] = lerp(float4(heatmap(fdiff), 1.0f), u0[DTid.xy], 0.95);
+                
+            #else // defined(AMD_AGS_ENABLED)
+            #endif // defined(AMD_AGS_ENABLED)
+        }
         //!js
         """,
-            args = "-E main -T cs_6_5",
+            args = "-E main -T cs_6_5 " + amd_ags_define,
         )
         assert bytecode is not None
 
@@ -586,8 +714,8 @@ class MainWindow:
             resourceDesc = native.D3D12_RESOURCE_DESC(
                 Dimension = native.D3D12_RESOURCE_DIMENSION.TEXTURE2D,
                 Alignment = 0,
-                Width = width,
-                Height = height,
+                Width = 1 << 12,
+                Height = 1 << 12,
                 DepthOrArraySize = 1,
                 MipLevels = 1,
                 Format = native.DXGI_FORMAT.R16G16B16A16_FLOAT,
@@ -906,7 +1034,18 @@ class MainWindow:
         # print(f"dt = {dt}")
 
         # !Imgui
-        window_width, window_height = native.GetWindowSize(self.hwnd)
+        if ctypes.windll.user32.IsWindow(self.hwnd) == 0:
+            print_red("Window is closed")
+            self.render_timer.stop()
+            on_close()
+            return
+        try:
+            window_width, window_height = native.GetWindowSize(self.hwnd)
+        except Exception as e:
+            print_red(f"Failed to get window size: {e}")
+            self.render_timer.stop()
+            on_close()
+            return
         self.imgui_ctx.set_ctx()
         self.imgui_ctx.ctx.SetDisplaySize(window_width, window_height)
         Im.NewFrame()
@@ -965,8 +1104,29 @@ class MainWindow:
             RootParameterIndex  = 0,
             BaseDescriptor      = self.descriptor_table
         )
+        cmd_list.SetComputeRootConstantBufferView(
+            RootParameterIndex  = 1,
+            BufferLocation      = self.cbuffer_wb.GetGPUVirtualAddress() + back_buffer_idx * ctypes.sizeof(CBuffer)
+        )
 
-        cmd_list.Dispatch(window_width // 8, window_height // 8, 1)
+        if key_press_map.get(Qt.Key_W, False): camera.move_forward(1.0)
+        if key_press_map.get(Qt.Key_S, False): camera.move_forward(-1.0)
+        if key_press_map.get(Qt.Key_A, False): camera.move_right(-1.0)
+        if key_press_map.get(Qt.Key_D, False): camera.move_right(1.0)
+        if key_press_map.get(Qt.Key_Q, False): camera.move_up(-1.0)
+        if key_press_map.get(Qt.Key_E, False): camera.move_up(1.0)
+
+        # print(f"camera.pos = {camera.pos}")
+
+        camera.update()
+        self.cbuffer_wb_arr[back_buffer_idx].frustum_x      = (camera.frustum_x.x, camera.frustum_x.y, camera.frustum_x.z)
+        self.cbuffer_wb_arr[back_buffer_idx].frustum_y      = (camera.frustum_y.x, camera.frustum_y.y, camera.frustum_y.z)
+        self.cbuffer_wb_arr[back_buffer_idx].frustum_z      = (camera.frustum_z.x, camera.frustum_z.y, camera.frustum_z.z)
+        self.cbuffer_wb_arr[back_buffer_idx].half_fov_tan   = camera.half_fov_tan
+        self.cbuffer_wb_arr[back_buffer_idx].aspect         = camera.aspect
+        self.cbuffer_wb_arr[back_buffer_idx].camera_pos     = (camera.pos.x, camera.pos.y, camera.pos.z)
+
+        cmd_list.Dispatch(self.uav_texture.GetDesc().Width // 8, self.uav_texture.GetDesc().Height, 1)
 
         rtv_heap_offset_cpu = self.rtv_descritor_heap.GetCPUDescriptorHandleForHeapStart().ptr + back_buffer_idx * self.rtv_descriptor_size
         rtv_heap_offset_gpu = self.rtv_descritor_heap.GetGPUDescriptorHandleForHeapStart().ptr + back_buffer_idx * self.rtv_descriptor_size
