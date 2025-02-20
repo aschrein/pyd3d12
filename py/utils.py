@@ -27,16 +27,21 @@ import psutil
 import subprocess
 import time
 
+def get_debug_level(): return int(os.environ.get("DEBUG", "0"))
+
 CONSOLE_COLOR_RED = "\033[91m"
 CONSOLE_COLOR_GREEN = "\033[92m"
 CONSOLE_COLOR_END = "\033[0m"
+CONSOLE_COLOR_YELLOW = "\033[93m"
+CONSOLE_COLOR_BLUE = "\033[94m"
+CONSOLE_COLOR_PURPLE = "\033[95m"
 CONSOLE_COLOR_RESET = "\033[0m"
 
-def print_green(text):
-    print(CONSOLE_COLOR_GREEN + text + CONSOLE_COLOR_END)
-
-def print_red(text):
-    print(CONSOLE_COLOR_RED + text + CONSOLE_COLOR_END)
+def print_green(text): print(CONSOLE_COLOR_GREEN + text + CONSOLE_COLOR_END)
+def print_red(text): print(CONSOLE_COLOR_RED + text + CONSOLE_COLOR_END)
+def print_yellow(text): print(CONSOLE_COLOR_YELLOW + text + CONSOLE_COLOR_END)
+def print_blue(text): print(CONSOLE_COLOR_BLUE + text + CONSOLE_COLOR_END)
+def print_purple(text): print(CONSOLE_COLOR_PURPLE + text + CONSOLE_COLOR_END)
 
 def set_build_type(build_type):
     os.environ["NATIVE_BUILD_TYPE"] = build_type

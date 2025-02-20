@@ -63,9 +63,9 @@ class CBV_SRV_UAV_DescriptorHeap:
     def get_gpu_descriptor_handle(self):
         return self.get_gpu_descriptor_handle_for_index(self.next_descriptor)
 
-    def get_next_descriptor_handle(self):
+    def get_next_descriptor_handle(self, num=1):
         cpu_handle, gpu_handle = self.get_cpu_descriptor_handle(), self.get_gpu_descriptor_handle()
-        self.next_descriptor = (self.next_descriptor + 1) % self.num_descriptors
+        self.next_descriptor = (self.next_descriptor + num) % self.num_descriptors
         return cpu_handle, gpu_handle
 
     def reset(self):
@@ -77,6 +77,38 @@ def make_write_combined_buffer(device, size, state = native.D3D12_RESOURCE_STATE
                 Type = native.D3D12_HEAP_TYPE.CUSTOM,
                 CPUPageProperty = native.D3D12_CPU_PAGE_PROPERTY.WRITE_COMBINE,
                 MemoryPoolPreference = native.D3D12_MEMORY_POOL.L0,
+                CreationNodeMask = 1,
+                VisibleNodeMask = 1
+            ),
+            heapFlags = native.D3D12_HEAP_FLAGS.NONE,
+            resourceDesc = native.D3D12_RESOURCE_DESC(
+                Dimension = native.D3D12_RESOURCE_DIMENSION.BUFFER,
+                Alignment = 0,
+                Width = size,
+                Height = 1,
+                DepthOrArraySize = 1,
+                MipLevels = 1,
+                Format = native.DXGI_FORMAT.UNKNOWN,
+                SampleDesc = native.DXGI_SAMPLE_DESC(
+                    Count = 1,
+                    Quality = 0
+                ),
+                Layout = native.D3D12_TEXTURE_LAYOUT.ROW_MAJOR,
+                Flags = native.D3D12_RESOURCE_FLAGS.NONE
+            ),
+            initialState = state,
+            optimizedClearValue = None
+        )
+    if name is not None:
+        res.SetName(name)
+    return res
+
+def make_readback_buffer(device, size, state = native.D3D12_RESOURCE_STATES.COPY_DEST, name = None):
+    res = device.CreateCommittedResource(
+            heapProperties = native.D3D12_HEAP_PROPERTIES(
+                Type = native.D3D12_HEAP_TYPE.READBACK,
+                CPUPageProperty = native.D3D12_CPU_PAGE_PROPERTY.UNKNOWN,
+                MemoryPoolPreference = native.D3D12_MEMORY_POOL.UNKNOWN,
                 CreationNodeMask = 1,
                 VisibleNodeMask = 1
             ),
@@ -268,7 +300,101 @@ def make_texture_from_dds(device, dds : DDSTexture):
     del upload_buffer
 
     return dst_tex
-    
+
+def make_dds_from_texture(device, src_tex):
+    desc = src_tex.GetDesc()
+    dds = DDSTexture()
+    dds.header.width            = desc.Width
+    dds.header.height           = desc.Height
+    dds.header.mip_map_count    = desc.MipLevels
+    dds.dx10_header.dxgi_format = DXGI_FORMAT(desc.Format.value)
+    dds.dx10_header.resource_dimension = D3D10_RESOURCE_DIMENSION.TEXTURE2D.value
+    dds.dx10_header.array_size = 1
+    dds.dx10_header.misc_flag = 0
+    dds.dx10_header.misc_flag2 = 0
+   
+
+    copyable_footprints = device.GetCopyableFootprints(Resource=desc,
+                                                       FirstSubresource=0,
+                                                       NumSubresources=dds.header.mip_map_count,
+                                                       BaseOffset=0)
+    readback_buffer = make_readback_buffer(device, sum([b for b in copyable_footprints.TotalBytes]))
+
+    src_bpp             = dds_get_bytes_per_pixel(DXGI_FORMAT(dds.dx10_header.dxgi_format))
+    is_block_compressed = dds_is_format_compressed(DXGI_FORMAT(dds.dx10_header.dxgi_format))
+    src_offset          = 0
+    dst_offset          = 0
+
+    cmd_queue = device.CreateCommandQueue(native.D3D12_COMMAND_QUEUE_DESC(
+        Type = native.D3D12_COMMAND_LIST_TYPE.DIRECT,
+        Priority = 0,
+        Flags = native.D3D12_COMMAND_QUEUE_FLAGS.NONE,
+        NodeMask = 0
+    ))
+    fence = device.CreateFence(0, native.D3D12_FENCE_FLAGS.NONE)
+    cmd_alloc = device.CreateCommandAllocator(native.D3D12_COMMAND_LIST_TYPE.DIRECT)
+    cmd_list = device.CreateCommandList(NodeMask=0, Type=native.D3D12_COMMAND_LIST_TYPE.DIRECT, Allocator=cmd_alloc)
+
+    dds_compacted_size = 0
+
+    for array_idx in range(dds.dx10_header.array_size):
+        for mip_idx in range(dds.header.mip_map_count):
+            cur_width       = max(1, dds.header.width >> mip_idx)
+            src_pitch       = src_bpp * cur_width
+            if is_block_compressed: src_pitch = max(1, (cur_width + 3) // 4) * src_bpp
+            subresource_idx = mip_idx + array_idx * dds.header.mip_map_count
+            dst_offset      = copyable_footprints.Layouts[subresource_idx].Offset
+            footprint       = copyable_footprints.Layouts[subresource_idx].Footprint
+            num_rows        = copyable_footprints.NumRows[subresource_idx]
+            
+            dds_compacted_size += footprint.Width * num_rows * src_bpp
+
+            # Copy the data from the upload buffer to the destination texture
+            scr_tex_loc = native.D3D12_TEXTURE_COPY_LOCATION(
+                Resource = src_tex,
+                SubresourceIndex = subresource_idx
+            )
+            dst_loc = native.D3D12_TEXTURE_COPY_LOCATION(
+                Resource = readback_buffer,
+                PlacedFootprint = copyable_footprints.Layouts[subresource_idx]
+            )
+            cmd_list.CopyTextureRegion(dst_loc, 0, 0, 0, scr_tex_loc, None)
+
+    cmd_list.Close()
+
+    e = native.Event()
+    fence.SetEventOnCompletion(1, e)
+    cmd_queue.ExecuteCommandLists([cmd_list])
+    cmd_queue.Signal(fence, 1)
+    e.Wait()
+
+    dds_buffer_size = dds_compacted_size
+
+    buffer = np.zeros(dds_buffer_size, dtype=np.uint8)
+    buffer_ptr = buffer.ctypes.data
+    src_data_ptr = readback_buffer.Map(0, None)
+
+    src_offset          = 0
+    dst_offset          = 0
+    for array_idx in range(dds.dx10_header.array_size):
+        for mip_idx in range(dds.header.mip_map_count):
+            cur_width       = max(1, dds.header.width >> mip_idx)
+
+            subresource_idx = mip_idx + array_idx * dds.header.mip_map_count
+            dst_offset      = copyable_footprints.Layouts[subresource_idx].Offset
+            footprint       = copyable_footprints.Layouts[subresource_idx].Footprint
+            num_rows        = copyable_footprints.NumRows[subresource_idx]
+
+            for row in range(num_rows):
+                ctypes.memmove(buffer_ptr + dst_offset, src_data_ptr + src_offset, src_bpp * cur_width)
+                src_offset += footprint.RowPitch
+                dst_offset += src_bpp * cur_width
+            
+    readback_buffer.Unmap(0, None)
+
+    dds.buf_ref = BufferWrapper(buffer=buffer, offset=0, size=dds_buffer_size)
+    return dds
+
 
 def make_texture_from_numpy_array_NHWC(device, arr : np.ndarray):
     
@@ -383,4 +509,34 @@ def make_texture_from_numpy_array_NHWC(device, arr : np.ndarray):
 
     del upload_buffer
 
+    return dst_tex
+
+def make_uav_texture_2d(device, width, height, format):
+    dst_tex = device.CreateCommittedResource(
+            heapProperties = native.D3D12_HEAP_PROPERTIES(
+                Type = native.D3D12_HEAP_TYPE.DEFAULT,
+                CPUPageProperty = native.D3D12_CPU_PAGE_PROPERTY.UNKNOWN,
+                MemoryPoolPreference = native.D3D12_MEMORY_POOL.UNKNOWN,
+                CreationNodeMask = 1,
+                VisibleNodeMask = 1
+            ),
+            heapFlags = native.D3D12_HEAP_FLAGS.NONE,
+            resourceDesc = native.D3D12_RESOURCE_DESC(
+                Dimension = native.D3D12_RESOURCE_DIMENSION.TEXTURE2D,
+                Alignment               = 0,
+                Width                   = width,
+                Height                  = height,
+                DepthOrArraySize        = 1,
+                MipLevels               = 1,
+                Format                  = format,
+                SampleDesc              = native.DXGI_SAMPLE_DESC(
+                    Count = 1,
+                    Quality = 0
+                ),
+                Layout = native.D3D12_TEXTURE_LAYOUT.UNKNOWN,
+                Flags = native.D3D12_RESOURCE_FLAGS.ALLOW_UNORDERED_ACCESS
+            ),
+            initialState = native.D3D12_RESOURCE_STATES.UNORDERED_ACCESS,
+            optimizedClearValue = None
+        )
     return dst_tex

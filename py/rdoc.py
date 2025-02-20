@@ -65,16 +65,17 @@ def rdoc_load():
 
 def rdoc_start_capture():
     if not rdoc_is_valid():
-        print("RenderDoc not loaded.")
+        if os.environ.get("DEBUG", "0") != "0": print_red("RenderDoc not loaded.")
         return
     assert ctx is not None
     ctx.StartCapture()
-    print("Started capture.")
+    
+    if os.environ.get("DEBUG", "0") != "0": print_green("Started capture.")
 
 def rdoc_end_capture():
     if not rdoc_is_valid():
-        print("RenderDoc not loaded.")
+        if os.environ.get("DEBUG", "0") != "0": print_red("RenderDoc not loaded.")
         return
     assert ctx is not None
     ctx.EndCapture()
-    print("Ended capture.")
+    if os.environ.get("DEBUG", "0") != "0": print_green("Ended capture.")

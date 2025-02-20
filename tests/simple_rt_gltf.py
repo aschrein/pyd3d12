@@ -119,6 +119,7 @@ class ChildWidget(qtw.QWidget):
 
         self.mouse_pressed = [False, False, False]
         self.mouse_last = (0, 0)
+        self.mouse_in_window = False
 
     def mouseMoveEvent(self, event):
         # print("Child widget mouse move:", event.pos())
@@ -160,10 +161,12 @@ class ChildWidget(qtw.QWidget):
 
     def enterEvent(self, event):
         # print("Mouse entered the child widget")
+        self.mouse_in_window = True
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         # print("Mouse left the child widget")
+        self.mouse_in_window = False
         super().leaveEvent(event)
     
     def keyPressEvent(self, event):
@@ -520,6 +523,8 @@ class MainWindow:
         #include "ags_shader_intrinsics_dx12.hlsl"
         #endif //  defined(AMD_AGS_ENABLED)
 
+        #include <utils.hlsli>
+
         struct Cbuffer {
             float3 frustum_x;
             float aspect;
@@ -580,38 +585,7 @@ class MainWindow:
             }
             return x;
         }
-        uint xxhash(in uint p)
-        {
-            const uint PRIME32_2 = 2246822519U, PRIME32_3 = 3266489917U;
-            const uint PRIME32_4 = 668265263U,  PRIME32_5 = 374761393U;
-
-            uint h32 = p + PRIME32_5;
-            h32 = PRIME32_4 * ((h32 << 17) | (h32 >> (32 - 17)));
-            h32 = PRIME32_2 * (h32 ^ (h32 >> 15));
-            h32 = PRIME32_3 * (h32 ^ (h32 >> 13));
-
-            return h32 ^ (h32 >> 16);
-        }
-
-        float3 random_color(uint a) {
-            a = xxhash(a);
-            return float3((a & 0xff) / 255.0f, ((a >> 8) & 0xff) / 255.0f, ((a >> 16) & 0xff) / 255.0f);
-        }
-
-        uint64_t u32x2_to_u64(uint2 v) {
-            return (uint64_t(v.y) << uint64_t(32)) | uint64_t(v.x);
-        }
-
-        // https://www.shadertoy.com/view/WslGRN
-        float3 heatmap(float t) {
-            t = saturate(t);
-            float level = t * 3.14159265/2.;
-            float3 col;
-            col.r = sin(level);
-            col.g = sin(level*2.);
-            col.b = cos(level);
-            return col;
-        }
+        
 
         
         // Blue Noise Sampler by Eric Heitz. Returns a value in the range [0, 1].
@@ -643,18 +617,6 @@ class MainWindow:
             return (value + 0.5f) / 256.0f;
         }
 
-        static float3x3 GetTBN(float3 normal) {
-            float3 up = abs(normal.z) < 0.999 ? float3(0, 0, 1) : float3(1, 0, 0);
-            float3 tangent = normalize(cross(up, normal));
-            float3 bitangent = cross(normal, tangent);
-            return float3x3(tangent, bitangent, normal);
-        }
-
-        static float2 SampleRandomCircle(float2 xi) {
-            float r = sqrt(xi.x);
-            float theta = 2 * 3.14159265359 * xi.y;
-            return float2(r * cos(theta), r * sin(theta));
-        }
 
         [RootSignature(ROOT_SIGNATURE_MACRO)]
         [numthreads(8, 8, 1)]
@@ -721,8 +683,8 @@ class MainWindow:
                     float3 normal_1       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.y * 12);
                     float3 normal_2       = LoadAttributeFloat3(desc.normals_offset_dwords * 4 + indices.z * 12);
 
-                    float3 interpolation =float3(bary.x, bary.y, 1.0f - bary.x - bary.y);
-                    float3 normal = normalize(normal_0 * interpolation.x + normal_1 * interpolation.y + normal_2 * interpolation.z);
+                    float3 interpolation    = float3(bary.x, bary.y, 1.0f - bary.x - bary.y);
+                    float3 normal           = normalize(normal_0 * interpolation.z + normal_1 * interpolation.x + normal_2 * interpolation.y);
 
                     const float3 sun_dir = normalize(float3(0.0, 1.0, -1.0));
 
@@ -775,7 +737,8 @@ class MainWindow:
                 if (b0.frame_idx == 0) {
                     u0[DTid.xy] = new_val;
                 } else {
-                    u0[DTid.xy] = lerp(new_val, u0[DTid.xy], 0.95);
+                    // u0[DTid.xy] = lerp(new_val, u0[DTid.xy], 0.95);
+                    u0[DTid.xy] = new_val;
                 }
             #endif // defined(AMD_AGS_ENABLED)
         }
@@ -1180,6 +1143,10 @@ class MainWindow:
         self.last_time = self.cur_time
         # print(f"dt = {dt}")
 
+        if self.child.mouse_in_window == False:
+            time.sleep(0.1)
+            return
+
         # !Imgui
         if ctypes.windll.user32.IsWindow(self.hwnd) == 0:
             print_red("Window is closed")
@@ -1256,12 +1223,13 @@ class MainWindow:
             BufferLocation      = self.cbuffer_wb.GetGPUVirtualAddress() + back_buffer_idx * ctypes.sizeof(CBuffer)
         )
 
-        if key_press_map.get(Qt.Key_W, False): camera.move_forward(1.0)
-        if key_press_map.get(Qt.Key_S, False): camera.move_forward(-1.0)
-        if key_press_map.get(Qt.Key_A, False): camera.move_right(-1.0)
-        if key_press_map.get(Qt.Key_D, False): camera.move_right(1.0)
-        if key_press_map.get(Qt.Key_Q, False): camera.move_up(-1.0)
-        if key_press_map.get(Qt.Key_E, False): camera.move_up(1.0)
+        camera_speed = 0.1
+        if key_press_map.get(Qt.Key_W, False): camera.move_forward(1.0 * camera_speed)
+        if key_press_map.get(Qt.Key_S, False): camera.move_forward(-1.0 * camera_speed)
+        if key_press_map.get(Qt.Key_A, False): camera.move_right(-1.0 * camera_speed)
+        if key_press_map.get(Qt.Key_D, False): camera.move_right(1.0 * camera_speed)
+        if key_press_map.get(Qt.Key_Q, False): camera.move_up(-1.0 * camera_speed)
+        if key_press_map.get(Qt.Key_E, False): camera.move_up(1.0 * camera_speed)
 
         # print(f"camera.pos = {camera.pos}")
 

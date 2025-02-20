@@ -29,6 +29,7 @@ from struct import *
 import ctypes
 import struct
 import numpy as np
+from pathlib import Path
 
 # https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format
 class DXGI_FORMAT(IntEnum):
@@ -409,6 +410,7 @@ class BufferWrapper:
 
     def __init__(self, buffer : np.ndarray, offset, size):
         self.buffer = buffer
+        self.initial_offset = offset
         self.offset = offset
         self.size   = size
         assert self.buffer.dtype == np.uint8, "Buffer must be uint8"
@@ -428,27 +430,79 @@ class BufferWrapper:
         self.offset += ctypes.sizeof(ctype)
         return obj
 
+def write_ctype_to_file(file, ctype_obj):
+    data = ctypes.string_at(ctypes.byref(ctype_obj), ctypes.sizeof(ctype_obj))
+    file.write(data)
+
 class DDSTexture:
     
     def __init__(self, path=None):
+        buffer = None
         if path is not None:
             with open(path, "rb") as f:
-                self.buffer = np.frombuffer(f.read(), dtype=np.uint8)
+                buffer = np.frombuffer(f.read(), dtype=np.uint8)
 
-        self.buf_ref        = BufferWrapper(self.buffer, 0, len(self.buffer))
-        first_dword         = self.buf_ref.read(4)
-        # print("--- ", self.buf_ref.offset)
-        # print(int_to_fourcc(unpack("I", first_dword)[0]))
-        assert unpack("I", first_dword)[0] == DDS_MAGIC, "Invalid DDS file"
-        self.header         = self.buf_ref.read_ctype(DDS_HEADER)
-        # print("--- ", self.buf_ref.offset)
-        # self.header.Print()
-        assert self.header.size == 124, "Only DDS_HEADER size 124 is supported"
-        assert self.header.ddspf.size == 32, "Only DDS_PIXELFORMAT size 32 is supported"
+        if buffer is not None:
+            
+            self.buf_ref        = BufferWrapper(buffer, 0, len(buffer))
+            first_dword         = self.buf_ref.read(4)
+            # print("--- ", self.buf_ref.offset)
+            # print(int_to_fourcc(unpack("I", first_dword)[0]))
+            assert unpack("I", first_dword)[0] == DDS_MAGIC, "Invalid DDS file"
+            self.header         = self.buf_ref.read_ctype(DDS_HEADER)
+            # print("--- ", self.buf_ref.offset)
+            # self.header.Print()
+            assert self.header.size == 124, "Only DDS_HEADER size 124 is supported"
+            assert self.header.ddspf.size == 32, "Only DDS_PIXELFORMAT size 32 is supported"
 
-        # assert self.header.ddspf.fourCC == MAKE_FOURCC('D', 'X', '1', '0'), "Only dx10 headers are supported"
+            # assert self.header.ddspf.fourCC == MAKE_FOURCC('D', 'X', '1', '0'), "Only dx10 headers are supported"
 
-        self.dx10_header = self.buf_ref.read_ctype(DDS_HEADER_DXT10)
-        # print("--- ", self.buf_ref.offset)
+            self.dx10_header = self.buf_ref.read_ctype(DDS_HEADER_DXT10)
+            # print("--- ", self.buf_ref.offset)
 
-        # self.dx10_header.Print()
+            # self.dx10_header.Print()
+        else:
+            self.buf_ref        = None
+            self.header         = DDS_HEADER(
+                size = 124,
+                flags = 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000,
+                height = 0,
+                width = 0,
+                pitch_or_linear_size = 0,
+                depth = 0,
+                mip_map_count = 0,
+                reserved1 = (0,) * 11,
+                ddspf = PIXELFORMAT(
+                    size = 32,
+                    flags = 0x4,
+                    fourCC = MAKE_FOURCC('D', 'X', '1', '0'),
+                    RGBBitCount = 32,
+                    RBitMask = 0x00FF0000,
+                    GBitMask = 0x0000FF00,
+                    BBitMask = 0x000000FF,
+                    ABitMask = 0xFF000000
+                ),
+                caps = 0x1000,
+                caps2 = 0,
+                caps3 = 0,
+                caps4 = 0,
+                reserved2 = 0
+            )
+            self.dx10_header    = DDS_HEADER_DXT10(
+                dxgi_format = DXGI_FORMAT.R8G8B8A8_UNORM.value,
+                resource_dimension = D3D10_RESOURCE_DIMENSION.TEXTURE2D.value,
+                misc_flag = 0,
+                array_size = 1,
+                misc_flags2 = 0
+            )
+    
+    def save(self, path: Path):
+        if not isinstance(path, Path):
+            path = Path(path)
+        
+        with open(path, "wb") as f:
+            f.write(DDS_MAGIC.to_bytes(4, byteorder='little'))
+            write_ctype_to_file(f, self.header)
+            write_ctype_to_file(f, self.dx10_header)
+            f.write(self.buf_ref.buffer[self.buf_ref.initial_offset:self.buf_ref.initial_offset+self.buf_ref.size])
+            
