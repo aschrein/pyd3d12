@@ -111,6 +111,8 @@ class GLTFPrimitive:
         self.indices = None
         if primitive.indices is not None:
             self.indices = AttributeReader(gltf_scene, primitive.indices).view
+        else:
+            assert False, "Indices are required"
 
         self.material = primitive.material
         if self.material is not None:
