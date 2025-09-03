@@ -51,18 +51,18 @@ assert ctypes.sizeof(ImVertex) == 20
 
 class ImGuiContext:
     def __init__(self, device, hwnd):
-        self.ctx = Im.CreateContext(hwnd)
-        self.device = device
-        self.vertex_buffer_size = 1 << 20
-        self.vertex_buffer_cursor = 0
-        self.index_buffer_size = 1 << 20
-        self.index_buffer_cursor = 0
-        self.vertex_buffer = make_write_combined_buffer(device, self.vertex_buffer_size, native.D3D12_RESOURCE_STATES.VERTEX_AND_CONSTANT_BUFFER, name="Imgui Vertex Buffer")
-        self.index_buffer = make_write_combined_buffer(device, self.index_buffer_size, native.D3D12_RESOURCE_STATES.INDEX_BUFFER, name="Imgui Index Buffer")
-        self.vertex_buffer_map = self.vertex_buffer.Map()
-        self.index_buffer_map = self.index_buffer.Map()
-
-        self.dxc_ctx = DXCContext()
+        self.ctx                    = Im.CreateContext(hwnd)
+        self.device                 = device
+        self.vertex_buffer_size     = 4 * (1 << 20)
+        self.vertex_buffer_cursor   = 0
+        self.index_buffer_size      = 4 * (1 << 20)
+        self.index_buffer_cursor    = 0
+        self.vertex_buffer          = make_write_combined_buffer(device, self.vertex_buffer_size, native.D3D12_RESOURCE_STATES.VERTEX_AND_CONSTANT_BUFFER, name="Imgui Vertex Buffer")
+        self.index_buffer           = make_write_combined_buffer(device, self.index_buffer_size, native.D3D12_RESOURCE_STATES.INDEX_BUFFER, name="Imgui Index Buffer")
+        self.vertex_buffer_map      = self.vertex_buffer.Map()
+        self.index_buffer_map       = self.index_buffer.Map()
+        self.dxc_ctx                = DXCContext()
+        
         triangle_shader_text = """
 //js
             #define ROOT_SIGNATURE_MACRO \
@@ -295,9 +295,7 @@ class ImGuiContext:
             )
 
             self.vertex_buffer_cursor = (self.vertex_buffer_cursor + vtx_buf_siz) % self.vertex_buffer_size
-            self.index_buffer_cursor = (self.index_buffer_cursor + idx_buf_siz) % self.index_buffer_size
-
-
+            self.index_buffer_cursor  = (self.index_buffer_cursor + idx_buf_siz) % self.index_buffer_size
 
             # print(f"len(cmd_buf): {len(cmd_buf)}")
             for cmd in cmd_buf:

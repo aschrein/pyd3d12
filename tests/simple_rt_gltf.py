@@ -71,23 +71,28 @@ class Vertex(ctypes.Structure):
 class GeometryDesc(ctypes.Structure):
     _fields_ = [
         ("flags", ctypes.c_uint),
-        ("position_offset_dwords", ctypes.c_uint),
-        ("normals_offset_dwords", ctypes.c_uint),
-        ("texcoord_offset_dwords", ctypes.c_uint),
-        ("tangent_offset_dwords", ctypes.c_uint),
-        ("indices_offset_dwords", ctypes.c_uint)
+        ("position_offset_dwords",  ctypes.c_uint),
+        ("normals_offset_dwords",   ctypes.c_uint),
+        ("texcoord_offset_dwords",  ctypes.c_uint),
+        ("tangent_offset_dwords",   ctypes.c_uint),
+        ("indices_offset_dwords",   ctypes.c_uint)
     ]
 
 class CBuffer(ctypes.Structure):
     _fields_ = [
         ("frustum_x", ctypes.c_float * 3),
         ("aspect", ctypes.c_float),
+
         ("frustum_y", ctypes.c_float * 3),
         ("half_fov_tan", ctypes.c_float),
+
         ("frustum_z", ctypes.c_float * 3),
         ("pad_0", ctypes.c_float),
+
         ("camera_pos", ctypes.c_float * 3),
-        ("frame_idx", ctypes.c_uint)
+        ("frame_idx", ctypes.c_uint),
+
+        ("pad", ctypes.c_uint * (256 // 4 - 4 * 4))
 
     ]
 
@@ -219,8 +224,8 @@ class MainWindow:
         self.imgui_ctx = ImGuiContext(self.device, self.hwnd)
         self.child.imgui_ctx = self.imgui_ctx
 
-        self.cbuffer_wb = make_write_combined_buffer(self.device, size=ctypes.sizeof(CBuffer) * 3, state=native.D3D12_RESOURCE_STATES.VERTEX_AND_CONSTANT_BUFFER, name="CBuffer")
-        cbuffer_ptr = self.cbuffer_wb.Map()
+        self.cbuffer_wb     = make_write_combined_buffer(self.device, size=ctypes.sizeof(CBuffer) * 3, state=native.D3D12_RESOURCE_STATES.VERTEX_AND_CONSTANT_BUFFER, name="CBuffer")
+        cbuffer_ptr         = self.cbuffer_wb.Map()
         self.cbuffer_wb_arr = (CBuffer * 3).from_address(cbuffer_ptr)
         
         # Create blue noise sampler buffers
