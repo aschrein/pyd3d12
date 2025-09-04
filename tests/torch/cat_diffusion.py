@@ -158,54 +158,32 @@ size=64
 class Model(nn.Module):
     def __init__(self):
         super(Model, self).__init__()
-        if 0:
-            # unet
-            
-            self.input_encoder    = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=1, stride=1)
-            self.l0_encoder_0     = EncoderBlock(channels=32)
-            self.l0_encoder_1     = EncoderBlock(channels=32)
-            self.l0_downsample    = DownsampleBlock(in_channels=32, out_channels=64)
 
-            self.l1_encoder_0     = EncoderBlock(channels=64)
-            self.l1_encoder_1     = EncoderBlock(channels=64)
-            self.l1_downsample    = DownsampleBlock(in_channels=64, out_channels=128)
+        self.feature_extractor_l0           = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1)
+        self.feature_extractor_l0_encoder_0 = EncoderBlock(channels=32)
+        self.feature_extractor_l0_encoder_1 = EncoderBlock(channels=32)
+        self.feature_extractor_l0_downsample = DownsampleBlock(in_channels=32, out_channels=64)
+        self.feature_extractor_l1_encoder_0 = EncoderBlock(channels=64)
+        self.feature_extractor_l1_encoder_1 = EncoderBlock(channels=64)
+        self.feature_extractor_l1_downsample = DownsampleBlock(in_channels=64, out_channels=128)
+        self.feature_extractor_l2_encoder_0 = EncoderBlock(channels=128)
+        self.feature_extractor_l2_encoder_1 = EncoderBlock(channels=128)
+        self.feature_extractor_l2_upsample = UpsampleBlock(in_channels=128, out_channels=64)
+        self.feature_extractor_l1_decoder_0 = EncoderBlock(channels=64)
+        self.feature_extractor_l1_decoder_1 = EncoderBlock(channels=64)
+        self.feature_extractor_l1_upsample = UpsampleBlock(in_channels=64, out_channels=32)
+        self.feature_extractor_l0_decoder_0 = EncoderBlock(channels=32)
 
-            self.l2_encoder_0     = EncoderBlock(channels=128)
-            self.l2_encoder_1     = EncoderBlock(channels=128)
-            self.l2_upsample      = UpsampleBlock(in_channels=128, out_channels=64)
+        self.learned_positional_encoding = nn.Parameter(torch.randn(1, 512, size // 16, size // 16))
 
-            self.l1_decoder_0     = EncoderBlock(channels=64)
-            self.l1_decoder_1     = EncoderBlock(channels=64)
-            self.l1_upsample      = UpsampleBlock(in_channels=64, out_channels=32)
+        self.patch_embed       = PatchEmbed(in_channels=32, embed_dim=512, kernel_size=16)
+        self.pixel_patch_embed = PatchEmbed(in_channels=3, embed_dim=512, kernel_size=16)
+        self.self_attn_bk_0  = SelfAttentionBlock(embed_dim=512, num_heads=8)
+        self.self_attn_bk_1  = SelfAttentionBlock(embed_dim=512, num_heads=8)
+        self.self_attn_bk_2  = SelfAttentionBlock(embed_dim=512, num_heads=8)
+        self.self_attn_bk_3  = SelfAttentionBlock(embed_dim=512, num_heads=8)
 
-            self.l0_decoder_0     = EncoderBlock(channels=32)
-            self.l0_decoder_1     = EncoderBlock(channels=32)
-            self.l0_decoder_act   = nn.Tanh()
-        else:
-            self.input_encoder    = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=1, stride=1)
-            self.l0_encoder_0     = EncoderBlock(channels=32)
-            self.l0_encoder_1     = EncoderBlock(channels=32)
-            self.l0_downsample    = DownsampleBlock(in_channels=32, out_channels=64)
-
-            self.l1_encoder_0     = EncoderBlock(channels=64)
-            self.l1_encoder_1     = EncoderBlock(channels=64)
-            self.l1_downsample    = DownsampleBlock(in_channels=64, out_channels=128)
-
-            self.l2_encoder_0     = EncoderBlock(channels=128)
-            self.l2_encoder_1     = EncoderBlock(channels=128)
-            self.l2_downsample    = DownsampleBlock(in_channels=128, out_channels=256)
-
-            self.l3_encoder_0     = EncoderBlock(channels=256)
-            self.l3_encoder_1     = EncoderBlock(channels=256)
-            self.l3_downsample    = DownsampleBlock(in_channels=256, out_channels=768)
-
-        self.patch_embed     = PatchEmbed(in_channels=3, embed_dim=768, kernel_size=16)
-        self.self_attn_bk_0  = SelfAttentionBlock(embed_dim=768, num_heads=8)
-        self.self_attn_bk_1  = SelfAttentionBlock(embed_dim=768, num_heads=8)
-        self.self_attn_bk_2  = SelfAttentionBlock(embed_dim=768, num_heads=8)
-        self.self_attn_bk_3  = SelfAttentionBlock(embed_dim=768, num_heads=8)
-
-        self.post_attn_upsample_0              = UpsampleBlock(in_channels=768, out_channels=256)
+        self.post_attn_upsample_0              = UpsampleBlock(in_channels=512, out_channels=256)
         self.post_attn_upsample_0_decoder_0    = EncoderBlock(channels=256)
         self.post_attn_upsample_0_decoder_1    = EncoderBlock(channels=256)
         self.post_attn_upsample_1              = UpsampleBlock(in_channels=256, out_channels=128)
@@ -247,49 +225,29 @@ class Model(nn.Module):
         return l2_encoder_0
 
     def forward(self, input):
-        if 0:
-            x               = self.input_encoder(input)
+        
+        if 1:
+            # Feature extraction
+            feature_extractor_l0                = self.feature_extractor_l0(input)
+            feature_extractor_l0_encoder_0      = self.feature_extractor_l0_encoder_0(feature_extractor_l0)
+            feature_extractor_l0_encoder_1      = self.feature_extractor_l0_encoder_1(feature_extractor_l0_encoder_0)
+            feature_extractor_l0_downsample     = self.feature_extractor_l0_downsample(feature_extractor_l0_encoder_1)
+            feature_extractor_l1_encoder_0      = self.feature_extractor_l1_encoder_0(feature_extractor_l0_downsample)
+            feature_extractor_l1_encoder_1      = self.feature_extractor_l1_encoder_1(feature_extractor_l1_encoder_0)
+            feature_extractor_l1_downsample     = self.feature_extractor_l1_downsample(feature_extractor_l1_encoder_1)
+            feature_extractor_l2_encoder_0      = self.feature_extractor_l2_encoder_0(feature_extractor_l1_downsample)
+            feature_extractor_l2_encoder_1      = self.feature_extractor_l2_encoder_1(feature_extractor_l2_encoder_0)
+            feature_extractor_l2_upsample       = self.feature_extractor_l2_upsample(feature_extractor_l2_encoder_1) + feature_extractor_l1_encoder_1
+            feature_extractor_l1_decoder_0      = self.feature_extractor_l1_decoder_0(feature_extractor_l2_upsample)
+            feature_extractor_l1_decoder_1      = self.feature_extractor_l1_decoder_1(feature_extractor_l1_decoder_0)
+            feature_extractor_l1_upsample       = self.feature_extractor_l1_upsample(feature_extractor_l1_decoder_1) + feature_extractor_l0_encoder_1
+            feature_extractor_l0_decoder_0      = self.feature_extractor_l0_decoder_0(feature_extractor_l1_upsample)
 
-            # Unet
-            l0_encoder_0 = self.l0_encoder_0(x)
-            l0_encoder_1 = self.l0_encoder_1(l0_encoder_0)
-            l0_downsample = self.l0_downsample(l0_encoder_1)
-
-            l1_encoder_0 = self.l1_encoder_0(l0_downsample)
-            l1_encoder_1 = self.l1_encoder_1(l1_encoder_0)
-            l1_downsample = self.l1_downsample(l1_encoder_1)
-
-            l2_encoder_0 = self.l2_encoder_0(l1_downsample)
-            l2_encoder_1 = self.l2_encoder_1(l2_encoder_0)
-            l2_upsample  = self.l2_upsample(l2_encoder_1) + l1_encoder_1
-
-            l1_decoder_0 = self.l1_decoder_0(l2_upsample)
-            l1_decoder_1 = self.l1_decoder_1(l1_decoder_0)
-            l1_upsample  = self.l1_upsample(l1_decoder_1) + l0_encoder_1
-
-            l0_decoder_0 = self.l0_decoder_0(l1_upsample)
-            l0_decoder_1 = self.l0_decoder_1(l0_decoder_0)
-
-            l0_decoder_act = self.l0_decoder_act(l0_decoder_1)
-
+            # Self attention
+            patch_embed = self.patch_embed(feature_extractor_l0_decoder_0) + self.learned_positional_encoding
         else:
-            x               = self.input_encoder(input)
+            patch_embed = self.pixel_patch_embed(input) + self.learned_positional_encoding
 
-            x = self.l0_encoder_0(x) 
-            x = self.l0_encoder_1(x) 
-            x = self.l0_downsample(x)
-            x = self.l1_encoder_0(x) 
-            x = self.l1_encoder_1(x) 
-            x = self.l1_downsample(x)
-            x = self.l2_encoder_0(x) 
-            x = self.l2_encoder_1(x) 
-            x = self.l2_downsample(x)
-            x = self.l3_encoder_0(x) 
-            x = self.l3_encoder_1(x) 
-            x = self.l3_downsample(x)
-
-        # Self attention
-        patch_embed = x
         x           = self.self_attn_bk_0(patch_embed)
         x           = self.self_attn_bk_1(x)
         x           = self.self_attn_bk_2(x)
@@ -314,6 +272,7 @@ class Model(nn.Module):
         alpha = F.sigmoid(alpha)
 
         return torch.lerp(input, y, alpha)
+        # return input + y * alpha
 
 # print(assemble_batch().shape)
 
@@ -321,7 +280,7 @@ model     = Model().to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-2)
 
 num_epochs = 10000
-batch_size = 128
+batch_size = 64
 num_iters_train  = 64
 num_iters  = 64
 
@@ -349,18 +308,18 @@ for epoch in range(num_epochs):
     # make sure we're I(x) when it comes to the actual attractors
     optimizer.zero_grad()
     o           = model(b)
-    loss        = (F.mse_loss(o, b) + SSIMLoss()(o.clamp(0, 1), b.clamp(0, 1))) * 1.0
+    loss        = (F.mse_loss(o, b) + SSIMLoss()(o.clamp(0, 1), b.clamp(0, 1))) * 4.0
     loss.backward()
     optimizer.step()
 
     noise_level = torch.rand(batch_size, 1, 4, 4, device=device)
-   
-    if random.random() < 0.5:
-        noise_level = torch.where(
-            noise_level > 0.5,
-            torch.ones_like(noise_level),
-            torch.ones_like(noise_level) * 0.1
-        )
+
+    noise_level = torch.where(
+        noise_level > 0.5,
+        torch.ones_like(noise_level),
+        torch.ones_like(noise_level) * 0.1
+    )
+
     # Upscale noise level
     noise_level = F.interpolate(noise_level, size=(size, size), mode='bilinear', align_corners=False)
     # noise_level = 0.9
@@ -368,7 +327,6 @@ for epoch in range(num_epochs):
     # o = torch.randn_like(b)
     i = o
     
-
     # o = torch.randn_like(b)
     # o = torch.lerp(b, torch.randn_like(b), (noise_level))
     # o = b * 0.5 + torch.randn_like(b) * 0.5
@@ -376,15 +334,16 @@ for epoch in range(num_epochs):
     # for name, param in model.named_parameters():
     #     params[name].data.copy_(param.data)
 
-    chain = 1 # random.randint(2, 4)
+    chain = 1 # random.randint(1, 3)
+    iters = num_iters_train # random.randint(1, num_iters_train // chain) * chain
 
-    for iter in range(num_iters_train // chain):
+    for iter in range(iters // chain):
         loss  = 0.0
         o = o.detach()
         optimizer.zero_grad()
         for chidx in range(chain):
             o           = model(o)
-            schedule_weight = (math.exp(4.0 * (iter * chain + chidx - num_iters_train ) / (num_iters_train))) * 16.0
+            schedule_weight = (math.exp(4.0 * (iter * chain + chidx - iters ) / (iters))) * 16.0
             loss        = loss + (F.mse_loss(o, b) + SSIMLoss()(o.clamp(0, 1), b.clamp(0, 1))) * schedule_weight
             # Feature loss
             # ref_features = cloned_model.extract_features_from_image(b).detach()
@@ -396,6 +355,22 @@ for epoch in range(num_epochs):
         loss.backward()
         optimizer.step()
 
+        # Enforce diversity
+        # idx_0 = random.randint(0, batch_size - 1)
+        # idx_1 = random.randint(0, batch_size - 1)
+        # if idx_1 != idx_0:
+        #     img_0 = o[idx_0:idx_0+1, :, :, :]
+        #     img_1 = o[idx_1:idx_1+1, :, :, :]
+        #     optimizer.zero_grad()
+        #     loss        = loss + torch.exp(-F.mse_loss(img_0, img_1)) * 1.0
+        #     loss.backward()
+        #     optimizer.step()
+        # else:
+        #     loss.backward()
+        #     optimizer.step()
+        # loss.backward()
+        # optimizer.step()
+
     if epoch % 16 == 0:
         stack = torch.zeros((1, 3, 3 * size, batch_size * size), device=device)
         for batch_idx in range(batch_size):
@@ -406,20 +381,7 @@ for epoch in range(num_epochs):
         dds = dds_from_tensor(stack)
         dds.save(".tmp/input.dds")
 
-        # Enforce diversity
-        # idx_0 = random.randint(0, batch_size - 1)
-        # idx_1 = random.randint(0, batch_size - 1)
-        # if idx_1 != idx_0:
-        #     img_0 = o[idx_0:idx_0+1, :, :, :]
-        #     img_1 = o[idx_1:idx_1+1, :, :, :]
-        #     optimizer.zero_grad()
-        #     o           = model(o.detach())
-        #     loss        = loss + torch.exp(-F.mse_loss(img_0, img_1)) * (math.exp(4.0 * (iter - num_iters_train) / (num_iters_train))) * 4.0
-        #     loss.backward()
-        #     optimizer.step()
-        # else:
-        #     loss.backward()
-        #     optimizer.step()
+
 
     
 

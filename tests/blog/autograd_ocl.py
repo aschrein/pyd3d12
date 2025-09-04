@@ -535,8 +535,8 @@ def subf_kernel(dst, a, b, N): _subf_kernel(queue, [roundup_to_64(N)], None, dst
 def mulf_kernel(dst, a, b, N): _mulf_kernel(queue, [roundup_to_64(N)], None, dst, a, np.array([b], dtype=np.float32), np.array([N], dtype=np.int32))
 def divf_kernel(dst, a, b, N): _divf_kernel(queue, [roundup_to_64(N)], None, dst, a, np.array([b], dtype=np.float32), np.array([N], dtype=np.int32))
 def reduce_kernel(dst, src, N): _reduce_64_kernel(queue, [roundup_to_64(N / 64)], None, dst, src, np.array([N], dtype=np.int32))
-def matmul_kernel(dst, a, b, N, C, F): _matmul_kernel(queue, [roundup_to_64(N * F)], None, dst, a, b, np.array([N]), np.array([C], dtype=np.int32), np.array([F], dtype=np.int32))
-def outer_product_accumulate_kernel(dst, a, b, N, C, F): _outer_product_accumulate_kernel(queue, [roundup_to_64(F * C)], None, dst, a, b, np.array([N]), np.array([C]), np.array([F]))
+def matmul_kernel(dst, a, b, N, C, F): _matmul_kernel(queue, [roundup_to_64(N * F)], None, dst, a, b, np.array([N], dtype=np.int32), np.array([C], dtype=np.int32), np.array([F], dtype=np.int32))
+def outer_product_accumulate_kernel(dst, a, b, N, C, F): _outer_product_accumulate_kernel(queue, [roundup_to_64(F * C)], None, dst, a, b, np.array([N], dtype=np.int32), np.array([C], dtype=np.int32), np.array([F], dtype=np.int32))
 def transpose_kernel(dst, src, F, C): _transpose_kernel(queue, [roundup_to_64(F * C)], None, dst, src, np.array([F], dtype=np.int32), np.array([C], dtype=np.int32))
 def set_kernel(dst, val, N): _set_kernel(queue, [roundup_to_64(N)], None, dst, np.array([val], dtype=np.float32), np.array([N], dtype=np.int32))
 def zero_kernel(dst, N): _zero_kernel(queue, [roundup_to_64(N)], None, dst, np.array([N], dtype=np.int32))
@@ -1356,10 +1356,7 @@ class AdamW:
         for i, p in enumerate(self.parameters):
             self.moments_1[i] = self.moments_1[i] * self.betas[0] + p.grad * (1 - self.betas[0])
             self.moments_2[i] = self.moments_2[i] * self.betas[1] + (p.grad * p.grad) * (1 - self.betas[1])
-            variance          = self.moments_2[i] - self.moments_1[i] * self.moments_1[i]
-            abs_kernel(variance.buffer, variance.buffer, dims_get_total(variance.shape))
-            sqrt_kernel(variance.buffer, variance.buffer, dims_get_total(variance.shape))
-            p.values    -= self.moments_1[i] / (variance + 1e-8) * self.lr
+            p.values    -= self.moments_1[i] / (self.moments_2[i].sqrt() + 1e-8) * self.lr
             p.values    -= p.values * self.weight_decay * self.lr
 
     def get_list_of_live_buffers(self):
@@ -1435,7 +1432,7 @@ def eval_target(x):
 adamw = AdamW(parameters=[m0, b0, m1, b1, m2, b2, m3, b3], lr=0.000533, weight_decay=0.01, betas=(0.92, 0.95))
 
 import matplotlib.image as image
-ref = image.imread("mlp_compression/assets/kodim23.png")[0:512, 0:512, 0:3]
+ref = image.imread("assets/kodim23.png")[0:512, 0:512, 0:3]
 
 assert ref.shape == (512, 512, 3), f"Unexpected reference image shape: {ref.shape}"
 

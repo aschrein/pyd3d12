@@ -489,7 +489,7 @@ class AdamW:
             self.moments_1[i] = self.moments_1[i] * self.betas[0] + p.grad * (1 - self.betas[0])
             self.moments_2[i] = self.moments_2[i] * self.betas[1] + (p.grad * p.grad) * (1 - self.betas[1])
             variance          = self.moments_2[i] - self.moments_1[i] * self.moments_1[i]
-            p.values.data    -= self.lr * self.moments_1[i].data / (np.abs(variance.data) ** 0.5 + 1e-8)
+            p.values.data    -= self.lr * self.moments_1[i].data / (np.sqrt(self.moments_2[i].data) + 1e-8)
             p.values.data    -= self.weight_decay * self.lr * p.values.data
 
 
@@ -514,7 +514,7 @@ if 1:
 
         adamw.step()
 
-exit()
+    exit()
 
 num_input_features = 64
 num_nodes          = 64

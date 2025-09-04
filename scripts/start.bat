@@ -22,10 +22,10 @@ if not exist bin\python (
 
 @REM Setup venv
 
-if not exist venv\Scripts\activate.bat (
-    uv.exe --cache-dir %UV_CACHE_DIR% venv --python bin\python\cpython-3.11.11-windows-x86_64-none\python.exe ./venv
+if not exist .\.venv\Scripts\activate.bat (
+    uv.exe --cache-dir %UV_CACHE_DIR% venv --python bin\python\cpython-3.11.11-windows-x86_64-none\python.exe .\.venv
 )
-call venv\Scripts\activate.bat
+call .venv\Scripts\activate.bat
 
 if not exist bin\nuget.exe (
     curl --tlsv1.2 -kL https://dist.nuget.org/win-x86-commandline/latest/nuget.exe -o bin\nuget.exe

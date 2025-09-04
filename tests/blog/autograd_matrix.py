@@ -490,7 +490,7 @@ class AdamW:
             self.moments_2[i] = self.moments_2[i] * self.betas[1] + (p.grad * p.grad) * (1 - self.betas[1])
             variance = self.moments_2[i] - self.moments_1[i] * self.moments_1[i]
             for didx in range(len(p.values.data)):
-                p.values.data[didx] -= self.lr * self.moments_1[i].data[didx] / (variance.data[didx] ** 0.5 + 1e-8)
+                p.values.data[didx] -= self.lr * self.moments_1[i].data[didx] / (math.sqrt(self.moments_2[i].data[didx]) + 1e-8)
                 p.values.data[didx] -= self.weight_decay * self.lr * p.values.data[didx]
 
 adamw = AdamW(parameters=[m0, b0, m1, b1, m2, b2], lr=0.001, weight_decay=0.001, betas=(0.9, 0.9))

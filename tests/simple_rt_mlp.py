@@ -87,7 +87,9 @@ class CBuffer(ctypes.Structure):
         ("frustum_z", ctypes.c_float * 3),
         ("pad_0", ctypes.c_float),
         ("camera_pos", ctypes.c_float * 3),
-        ("frame_idx", ctypes.c_uint)
+        ("frame_idx", ctypes.c_uint),
+
+        ("pad", ctypes.c_uint * (256 // 4  - 4 * 4))
 
     ]
 
