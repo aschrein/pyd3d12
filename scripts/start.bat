@@ -50,8 +50,9 @@ if not exist bin\dxc_2024_07_31 (
 )
 
 @REM ---------------------------------------
-uv pip install psutil setuptools wheel scikit-build scikit-build-core pybind11 cmake
-uv pip install PyQt5
+uv add psutil setuptools wheel scikit-build scikit-build-core pybind11 cmake numpy matplotlib
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+uv pip install PyQt5 piq gltflib
 @REM ---------------------------------------
 
 powershell

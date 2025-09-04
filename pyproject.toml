@@ -7,6 +7,17 @@ version = "0.0.0"
 authors = [
     {name = "Anton Schreiner", email = "antonschrein@gmail.com"},
 ]
+dependencies = [
+    "cmake>=4.1.0",
+    "matplotlib>=3.10.6",
+    "numpy>=2.3.2",
+    "psutil>=7.0.0",
+    "pybind11>=3.0.1",
+    "scikit-build>=0.18.1",
+    "scikit-build-core>=0.11.6",
+    "setuptools>=80.9.0",
+    "wheel>=0.45.1",
+]
 
 [build-system]
 requires = ["setuptools",
