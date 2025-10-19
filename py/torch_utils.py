@@ -30,3 +30,21 @@ def dds_from_tensor(tensor):
     ctypes.memmove(buffer.ctypes.data, cpu_buffer.ctypes.data, cpu_buffer.nbytes)
     dds.buf_ref  = BufferWrapper(buffer, 0, buffer.nbytes)
     return dds
+
+import signal
+import logging
+
+class DelayedKeyboardInterrupt:
+
+    def __enter__(self):
+        self.signal_received = False
+        self.old_handler = signal.signal(signal.SIGINT, self.handler)
+                
+    def handler(self, sig, frame):
+        self.signal_received = (sig, frame)
+        logging.debug('SIGINT received. Delaying KeyboardInterrupt.')
+    
+    def __exit__(self, type, value, traceback):
+        signal.signal(signal.SIGINT, self.old_handler)
+        if self.signal_received:
+            self.old_handler(*self.signal_received)
