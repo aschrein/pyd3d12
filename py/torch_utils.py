@@ -10,6 +10,12 @@ def dds_from_tensor(tensor):
     if C == 3:
         tensor = torch.cat([tensor, torch.ones((1, 1, H, W), device=tensor.device)], dim=1)
         C = 4
+    
+    if C == 2:
+        tensor = torch.cat([tensor,
+                            torch.zeros((1, 1, H, W), device=tensor.device),
+                            torch.ones((1, 1, H, W), device=tensor.device)], dim=1)
+        C = 4
 
     assert C == 4, "Only 4 channel tensors are supported"
     tensor = tensor.squeeze(0)  # Remove batch dimension

@@ -303,39 +303,20 @@ class VAE(nn.Module):
     def __init__(self, image_channels=3):
         super(VAE, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Conv2d(image_channels, 16, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(16),
-            nn.Conv2d(16, 512, kernel_size=16, stride=16, padding=0),
-            nn.BatchNorm2d(512),
-            EncoderBlock(channels=512),
+            nn.Conv2d(3, 8*8*3, kernel_size=8, stride=8, padding=0),
+            *[SelfAttentionBlock(embed_dim=8*8*3, num_heads=8) for _ in range(4)],
+            nn.Conv2d(8*8*3, 4, kernel_size=1, stride=1, padding=0),
         )
 
         # Latent space projections
-        self.fc_mu      = nn.Conv2d(512, 512, kernel_size=1, padding=0)
-        self.fc_logvar  = nn.Conv2d(512, 512, kernel_size=1, padding=0)
-
-        # Bottleneck with attention (your existing attention blocks)
-        # self.learned_positional_encoding = nn.Parameter(torch.randn(1, 512, 4, 4))
-        self.self_attn_bk = nn.Sequential(*[
-            SelfAttentionBlock(embed_dim=512, num_heads=8) for _ in range(4)
-        ])
+        self.fc_mu      = nn.Conv2d(4, 4, kernel_size=1, padding=0)
+        self.fc_logvar  = nn.Conv2d(4, 4, kernel_size=1, padding=0)
 
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(out_channels=512, in_channels=512, kernel_size=2, stride=2, padding=0),
-            nn.BatchNorm2d(512),
-            EncoderBlock(channels=512),
-            nn.ConvTranspose2d(out_channels=256, in_channels=512, kernel_size=2, stride=2, padding=0),
-            nn.BatchNorm2d(256),
-            EncoderBlock(channels=256),
-            nn.ConvTranspose2d(out_channels=128, in_channels=256, kernel_size=2, stride=2, padding=0),
-            nn.BatchNorm2d(128),
-            EncoderBlock(channels=128),
-            nn.ConvTranspose2d(out_channels=64, in_channels=128, kernel_size=2, stride=2, padding=0),
-            nn.BatchNorm2d(64),
-            EncoderBlock(channels=64),
+            nn.Conv2d(4, 8*8*3, kernel_size=1, stride=1, padding=0),
+           *[SelfAttentionBlock(embed_dim=8*8*3, num_heads=8) for _ in range(4)],
+            nn.ConvTranspose2d(out_channels=3, in_channels=8*8*3, kernel_size=8, stride=8, padding=0),
         )
-
-        self.output_conv = nn.ConvTranspose2d(out_channels=3, in_channels=64, kernel_size=1, stride=1, padding=0)
 
     def encode(self, x, sample=True):
         e = self.encoder(x)
@@ -352,52 +333,52 @@ class VAE(nn.Module):
 
         return z, latents_mu, latents_logvar
 
-    def decode(self, x):
-        z = self.self_attn_bk(x)
-
-        d = self.decoder(z)
-        d = self.output_conv(d)
-        return d
+    def decode(self, x): return self.decoder(x)
 
     def forward(self, x):
         assert False, "Not implemented"
 
 
 class VAEDiffusion(nn.Module):
-    def __init__(self, latent_dim=512):
+    def __init__(self):
         super(VAEDiffusion, self).__init__()
 
-        self.dm_convs = nn.Sequential(*[
-            EncoderBlock(channels=512),
-            nn.BatchNorm2d(512),
-            EncoderBlock(channels=512),
-            nn.BatchNorm2d(512),
-            EncoderBlock(channels=512),
-            nn.BatchNorm2d(512),
-        ])
-        self.dm_self_attn_bk = nn.Sequential(*[
-            SelfAttentionBlock(embed_dim=512, num_heads=8) for _ in range(4)
-        ])
-        self.dm_e_conv_3 = EncoderBlock(channels=512)
+        # self.dm_convs = nn.Sequential(*[
+        #     EncoderBlock(channels=512),
+        #     nn.BatchNorm2d(512),
+        #     EncoderBlock(channels=512),
+        #     nn.BatchNorm2d(512),
+        #     EncoderBlock(channels=512),
+        #     nn.BatchNorm2d(512),
+        # ])
 
-        self.velocity_decoder = nn.Sequential(
-            nn.Conv2d(in_channels=512 + 512, out_channels=512, kernel_size=3, stride=1, padding=1),
-            EncoderBlock(channels=512),
-            EncoderBlock(channels=512),
-            EncoderBlock(channels=512),
-        )
+        self.dm_self_attn_bk = nn.Sequential(*[
+            nn.Conv2d(4, 128, kernel_size=1, stride=1, padding=0),
+            nn.Dropout2d(0.05),
+            *[SelfAttentionBlock(embed_dim=128, num_heads=8) for _ in range(4)],
+            nn.Conv2d(128, 4, kernel_size=1, stride=1, padding=0),
+        ])
+        # self.dm_e_conv_3 = EncoderBlock(channels=512)
+
+        # self.velocity_decoder = nn.Sequential(
+        #     nn.Conv2d(in_channels=512 + 512, out_channels=512, kernel_size=3, stride=1, padding=1),
+        #     EncoderBlock(channels=512),
+        #     EncoderBlock(channels=512),
+        #     EncoderBlock(channels=512),
+        # )
 
 
     def get_grad(self, _z):
         z = _z
         B, C, H, W = z.shape
-        z = self.dm_convs(z)
+        # z = self.dm_convs(z)
         z = self.dm_self_attn_bk(z)
-        z = self.dm_e_conv_3(z)
+        # z = self.dm_e_conv_3(z)
 
-        velocity_input = torch.cat([_z, z], dim=1)
-        z = self.velocity_decoder(velocity_input)
-        return z
+        # velocity_input = torch.cat([_z, z], dim=1)
+        # z = self.velocity_decoder(velocity_input)
+
+        return z - _z
 
     def forward(self, x):
         assert False, "Not implemented"
@@ -558,8 +539,8 @@ if 1:
                     except Exception as e:
                         pass # Ignore file access issues or keyboard interrupts
 
-        # if (epoch == 0) or (random.random() < 0.15):
-        if 1:
+        if (epoch == 0) or (random.random() < 0.15):
+        # if 1:
 
             # if (epoch != 0) and do_neg_training:
             #     for p, cp in zip(model.state_dict().values(), model_param_checkpoint.values()):
@@ -589,7 +570,7 @@ if 1:
             # if random.random() < 0.5:
             #     noise_level = torch.rand(batch_size, 1, 4, 4, device=device)
             # else:
-            noise_level = torch.rand(batch_size, 1, 4, 4, device=device)
+            noise_level = torch.rand(batch_size, 1, 8, 8, device=device)
             # noise_level = F.interpolate(noise_level, size=(size // 16, size // 16), mode='bilinear', align_corners=False)
 
             z_src, latents_mu, latents_logvar = vae_model.encode(b, sample=False)
@@ -723,7 +704,7 @@ if 1:
 
                 inf_z = None
                 # z, latents_mu, latents_logvar = model.encode(decoded, sample=False)
-                inf_z = torch.randn((viz_batch_size, 512, 4, 4), device=device)
+                inf_z = torch.randn((viz_batch_size, 4, 8, 8), device=device)
 
                 for step in range(num_inference_steps):
                     # t_batch = torch.full((viz_batch_size,), step_idx, device=device, dtype=torch.long)
