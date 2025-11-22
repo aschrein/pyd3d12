@@ -46,7 +46,7 @@ setuptools.setup(
     cmake_install_dir=os.path.abspath('./build'),
     name="pyd3d12",
     version="0.0",
-    packages=['native', 'py', 'tests'],
+    packages=['native', 'py', 'tests', 'third_party'],
     cmake_source_dir=cmake_source_dir,
     cmake_process_manifest_hook=cmake_process_manifest_hook,
 )

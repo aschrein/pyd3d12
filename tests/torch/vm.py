@@ -71,7 +71,7 @@ class BinOps(enum.Enum):
     MUL = 2
     MAX = 3
     MIN = 4
-    STEP = 5
+    # STEP = 5
     # DIV = 3
 
 @dataclass
@@ -96,12 +96,12 @@ class BinOp(Op):
 class UnOps(enum.Enum):
     NEG = 0
     NOP = 1
-    SIN = 2
-    COS = 3
-    EXP = 4
-    LOG = 5
-    SQUARE = 6
-    SQRT = 7
+    # SIN = 2
+   # COS = 3
+    # EXP = 4
+    # LOG = 5
+    # SQUARE = 4
+    # SQRT = 5
 
 @dataclass
 class UnOp(Op):
@@ -419,138 +419,90 @@ x_coords     = torch.linspace(0.5, IMAGE_SIZE - 0.5, IMAGE_SIZE, device=torch_de
 y_coords     = torch.linspace(0.5, IMAGE_SIZE - 0.5, IMAGE_SIZE, device=torch_device).unsqueeze(1).repeat(1, IMAGE_SIZE) / IMAGE_SIZE
 uv           = torch.stack([x_coords, y_coords], dim=0)  # 2 x H x W
 
+def sample_scores_to_one_hot(scores: torch.Tensor):
+    N, H, W = scores.shape
+    softmax = scores.softmax(dim=0)
+    probs = softmax.permute(1, 2, 0).reshape(-1, N)  # shape: (H*W, N)
+    sampled_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)  # shape: (H*W,)
+    sampled_indices = sampled_indices.reshape(H, W)
+    one_hot = torch.nn.functional.one_hot(sampled_indices, num_classes=N)  # shape: (H, W, N)
+    one_hot = one_hot.permute(2, 0, 1).float()  # shape: (N, H, W)
+
+    return one_hot
+
 class LearnableOp(torch.nn.Module):
     def __init__(self, num_registers: int, device: torch.device):
         super().__init__()
-        self.dest_selector = torch.nn.Parameter(torch.randn((num_registers, 1, 1), dtype=torch.float32, device=device))
-        self.src0_selector = torch.nn.Parameter(torch.randn((num_registers, 1, 1), dtype=torch.float32, device=device))
-        self.src1_selector = torch.nn.Parameter(torch.randn((num_registers, 1, 1), dtype=torch.float32, device=device))
-        self.value         = torch.nn.Parameter(torch.randn((1, 1, 1), dtype=torch.float32, device=device))
-        self.op_select     = torch.nn.Parameter(torch.randn((len(OP_LIST), 1, 1), dtype=torch.float32, device=device))
-        self.binop_select  = torch.nn.Parameter(torch.randn((len(BinOps), 1, 1), dtype=torch.float32, device=device))
-        self.unop_select   = torch.nn.Parameter(torch.randn((len(UnOps), 1, 1), dtype=torch.float32, device=device))
-        self.frozen_selectors = False
+        self.dest_selector          = torch.nn.Parameter(torch.randn((num_registers, 1, 1), dtype=torch.float32, device=device))
+        self.src0_selector          = torch.nn.Parameter(torch.randn((num_registers, 1, 1), dtype=torch.float32, device=device))
+        self.src1_selector          = torch.nn.Parameter(torch.randn((num_registers, 1, 1), dtype=torch.float32, device=device))
+        self.value                  = torch.nn.Parameter(torch.randn((1, 1, 1), dtype=torch.float32, device=device))
+        self.op_select              = torch.nn.Parameter(torch.randn((len(OP_LIST), 1, 1), dtype=torch.float32, device=device))
+        self.binop_select           = torch.nn.Parameter(torch.randn((len(BinOps), 1, 1), dtype=torch.float32, device=device))
+        self.unop_select            = torch.nn.Parameter(torch.randn((len(UnOps), 1, 1), dtype=torch.float32, device=device))
+        # self.collapsed              = False
 
-    def freeze_selectors(self, freeze=True):
-        if self.frozen_selectors == freeze:
-            return
-        self.frozen_selectors = freeze
+    def collapse(self):
 
-        self.dest_selector.requires_grad = not freeze
-        self.src0_selector.requires_grad = not freeze
-        self.src1_selector.requires_grad = not freeze
-        self.op_select.requires_grad     = not freeze
-        self.binop_select.requires_grad  = not freeze
-        self.unop_select.requires_grad   = not freeze
+        # if self.collapsed:
+        #     return
 
-        dest_mask   = torch.nn.functional.softmax(self.dest_selector, dim=0)
-        src0_mask   = torch.nn.functional.softmax(self.src0_selector, dim=0)
-        src1_mask   = torch.nn.functional.softmax(self.src1_selector, dim=0)
-        binop_mask  = torch.nn.functional.softmax(self.binop_select, dim=0)
-        unop_mask   = torch.nn.functional.softmax(self.unop_select, dim=0)
-        op_mask     = torch.nn.functional.softmax(self.op_select, dim=0)
+        datas = [
+            self.dest_selector,
+            self.src0_selector,
+            self.src1_selector,
+            self.binop_select,
+            self.unop_select,
+            self.op_select,
+        ]
 
-        dest_mask_collapsed_idx   = dest_mask.argmax(dim=0)
-        src0_mask_collapsed_idx   = src0_mask.argmax(dim=0)
-        src1_mask_collapsed_idx   = src1_mask.argmax(dim=0)
-        binop_mask_collapsed_idx  = binop_mask.argmax(dim=0)
-        unop_mask_collapsed_idx   = unop_mask.argmax(dim=0)
-        op_mask_collapsed_idx     = op_mask.argmax(dim=0)
+        for d in datas:
+            if (random.random() < 0.5) and (d.requires_grad):
+                d.data = sample_scores_to_one_hot(d).data
+                d.requires_grad = False
 
-        dest_mask_one_hot   = torch.nn.functional.one_hot(dest_mask_collapsed_idx,  num_classes=NUM_REGISTERS).float().permute(2, 0, 1)
-        src0_mask_one_hot   = torch.nn.functional.one_hot(src0_mask_collapsed_idx,  num_classes=NUM_REGISTERS).float().permute(2, 0, 1)
-        src1_mask_one_hot   = torch.nn.functional.one_hot(src1_mask_collapsed_idx,  num_classes=NUM_REGISTERS).float().permute(2, 0, 1)
-        binop_mask_one_hot  = torch.nn.functional.one_hot(binop_mask_collapsed_idx, num_classes=len(BinOps)).float().permute(2, 0, 1)
-        unop_mask_one_hot   = torch.nn.functional.one_hot(unop_mask_collapsed_idx,  num_classes=len(UnOps)).float().permute(2, 0, 1)
-        op_mask_one_hot     = torch.nn.functional.one_hot(op_mask_collapsed_idx,    num_classes=len(OP_LIST)).float().permute(2, 0, 1)
-        
-        # dest_mask   = dest_mask  + (dest_mask_one_hot - dest_mask).detach()
-        # src0_mask   = src0_mask  + (src0_mask_one_hot - src0_mask).detach()
-        # src1_mask   = src1_mask  + (src1_mask_one_hot - src1_mask).detach()
-        # op_mask     = op_mask    + (op_mask_one_hot - op_mask).detach()
-        # binop_mask  = binop_mask + (binop_mask_one_hot - binop_mask).detach()
-        # unop_mask   = unop_mask  + (unop_mask_one_hot - unop_mask).detach()
-
-        self.dest_selector.data = torch.lerp(self.dest_selector.data, dest_mask_one_hot.data, 0.5)
-        self.src0_selector.data = torch.lerp(self.src0_selector.data, src0_mask_one_hot.data, 0.5)
-        self.src1_selector.data = torch.lerp(self.src1_selector.data, src1_mask_one_hot.data, 0.5)
-        self.op_select.data     = torch.lerp(self.op_select.data,     op_mask_one_hot.data, 0.5)
-        self.binop_select.data  = torch.lerp(self.binop_select.data,  binop_mask_one_hot.data, 0.5)
-        self.unop_select.data   = torch.lerp(self.unop_select.data,   unop_mask_one_hot.data, 0.5)
-
-        # self.dest_selector.data = self.dest_selector / self.dest_selector.sum(dim=0, keepdim=True)
-        # self.src0_selector.data = self.src0_selector / self.src0_selector.sum(dim=0, keepdim=True)
-        # self.src1_selector.data = self.src1_selector / self.src1_selector.sum(dim=0, keepdim=True)
-        # self.op_select.data     = self.op_select / self.op_select.sum(dim=0, keepdim=True)
-        # self.binop_select.data  = self.binop_select / self.binop_select.sum(dim=0, keepdim=True)
-        # self.unop_select.data   = self.unop_select / self.unop_select.sum(dim=0, keepdim=True)
-
-    def unfreeze_selectors(self):
-        self.freeze_selectors(freeze=False)
+        if (random.random() < 0.5) and (self.value.requires_grad):
+            self.value.requires_grad = False
 
     def clone(self):
         new_op = LearnableOp(NUM_REGISTERS, torch_device)
         for param, new_param in zip(self.parameters(), new_op.parameters()):
             new_param.data = param.data.clone()
+            new_param.requires_grad = param.requires_grad
+        # new_op.collapsed = self.collapsed
         return new_op
 
-    def forward(self, registers, collapse=False):
-        dest_mask   = torch.nn.functional.softmax(1.0 * self.dest_selector, dim=0)
-        src0_mask   = torch.nn.functional.softmax(1.0 * self.src0_selector, dim=0)
-        src1_mask   = torch.nn.functional.softmax(1.0 * self.src1_selector, dim=0)
-        binop_mask  = torch.nn.functional.softmax(1.0 * self.binop_select, dim=0)
-        unop_mask   = torch.nn.functional.softmax(1.0 * self.unop_select, dim=0)
-        op_mask     = torch.nn.functional.softmax(1.0 * self.op_select, dim=0)
+    def forward(self, registers, temperature=1.0):
 
-        if collapse:
-            # dest_mask   = torch.nn.functional.softmax(8.0 * self.dest_selector, dim=0)
-            # src0_mask   = torch.nn.functional.softmax(8.0 * self.src0_selector, dim=0)
-            # src1_mask   = torch.nn.functional.softmax(8.0 * self.src1_selector, dim=0)
-            # binop_mask  = torch.nn.functional.softmax(8.0 * self.binop_select, dim=0)
-            # unop_mask   = torch.nn.functional.softmax(8.0 * self.unop_select, dim=0)
-            # op_mask     = torch.nn.functional.softmax(8.0 * self.op_select, dim=0)
-
-            if 1:
-                dest_mask_collapsed_idx   = dest_mask.argmax(dim=0)
-                src0_mask_collapsed_idx   = src0_mask.argmax(dim=0)
-                src1_mask_collapsed_idx   = src1_mask.argmax(dim=0)
-                binop_mask_collapsed_idx  = binop_mask.argmax(dim=0)
-                unop_mask_collapsed_idx   = unop_mask.argmax(dim=0)
-                op_mask_collapsed_idx     = op_mask.argmax(dim=0)
-                dest_mask_one_hot   = torch.nn.functional.one_hot(dest_mask_collapsed_idx,  num_classes=NUM_REGISTERS).float().permute(2, 0, 1)
-                src0_mask_one_hot   = torch.nn.functional.one_hot(src0_mask_collapsed_idx,  num_classes=NUM_REGISTERS).float().permute(2, 0, 1)
-                src1_mask_one_hot   = torch.nn.functional.one_hot(src1_mask_collapsed_idx,  num_classes=NUM_REGISTERS).float().permute(2, 0, 1)
-                binop_mask_one_hot  = torch.nn.functional.one_hot(binop_mask_collapsed_idx, num_classes=len(BinOps)).float().permute(2, 0, 1)
-                unop_mask_one_hot   = torch.nn.functional.one_hot(unop_mask_collapsed_idx,  num_classes=len(UnOps)).float().permute(2, 0, 1)
-                op_mask_one_hot     = torch.nn.functional.one_hot(op_mask_collapsed_idx,    num_classes=len(OP_LIST)).float().permute(2, 0, 1)
-                dest_mask   = dest_mask_one_hot # dest_mask   + (dest_mask_one_hot - dest_mask).detach()
-                src0_mask   = src0_mask_one_hot # src0_mask   + (src0_mask_one_hot - src0_mask).detach()
-                src1_mask   = src1_mask_one_hot # src1_mask   + (src1_mask_one_hot - src1_mask).detach()
-                binop_mask  = binop_mask_one_hot # binop_mask  + (binop_mask_one_hot - binop_mask).detach()
-                unop_mask   = unop_mask_one_hot # unop_mask   + (unop_mask_one_hot - unop_mask).detach()
-                op_mask     = op_mask_one_hot # op_mask     + (op_mask_one_hot - op_mask).detach()
-
-                # assert (dest_mask.isnan().any() == False)
-                # assert (src0_mask.isnan().any() == False)
-                # assert (src1_mask.isnan().any() == False)
-                # assert (binop_mask.isnan().any() == False)
-                # assert (unop_mask.isnan().any() == False)
-                # assert (op_mask.isnan().any() == False)
+        dest_mask   = torch.nn.functional.softmax(self.dest_selector / temperature, dim=0) if self.dest_selector.requires_grad else self.dest_selector
+        src0_mask   = torch.nn.functional.softmax(self.src0_selector / temperature, dim=0) if self.src0_selector.requires_grad else self.src0_selector
+        src1_mask   = torch.nn.functional.softmax(self.src1_selector / temperature, dim=0) if self.src1_selector.requires_grad else self.src1_selector
+        binop_mask  = torch.nn.functional.softmax(self.binop_select / temperature, dim=0) if self.binop_select.requires_grad else self.binop_select
+        unop_mask   = torch.nn.functional.softmax(self.unop_select / temperature, dim=0) if self.unop_select.requires_grad else self.unop_select
+        op_mask     = torch.nn.functional.softmax(self.op_select / temperature, dim=0) if self.op_select.requires_grad else self.op_select
 
         src0 = (src0_mask * registers).sum(dim=0, keepdim=True)
-        # src1 = (src1_mask * registers).sum(dim=0, keepdim=True)
+        src1 = (src1_mask * registers).sum(dim=0, keepdim=True)
         dst  = (dest_mask  * registers).sum(dim=0, keepdim=True)
 
+        # assert dest_mask.isnan().any() == False, f"collapsed ={self.collapsed}"
+        # assert src0_mask.isnan().any() == False
+        # assert registers.isnan().any() == False
+        # assert src0.isnan().any() == False
+        # assert dst.isnan().any() == False
+
         # BinOp
-        binop_add_op = dst + src0
-        binop_sub_op = dst - src0
-        binop_mul_op = dst * src0
-        binop_div_op = dst / (src0.sign() * (src0.abs().clamp(min=1.0e-3)))  # avoid div by zero
+        binop_add_op = src0 + src1
+        binop_sub_op = src0 - src1
+        binop_mul_op = src0 * src1
+        # binop_div_op = dst / (src0.sign() * (src0.abs().clamp(min=1.0e-3)))  # avoid div by zero
 
-        softmax_src = torch.nn.functional.softmax(2.0 * torch.cat((dst, src0), dim=0), dim=0)
+        softmax_src = torch.nn.functional.softmax(2.0 * torch.cat((src0, src1), dim=0), dim=0)
 
-        binop_max_op = dst * softmax_src[0:1, :, :] + src0 * softmax_src[1:2, :, :]
-        binop_min_op = dst * softmax_src[1:2, :, :] + src0 * softmax_src[0:1, :, :]
+        binop_max_op = src0 * softmax_src[0:1, :, :] + src1 * softmax_src[1:2, :, :]
+        binop_max_op = torch.maximum(src0, src1)
+        # binop_min_op = src0 * softmax_src[1:2, :, :] + src1 * softmax_src[0:1, :, :]
+        binop_min_op = torch.minimum(src0, src1)
 
         binop_result = (
             binop_add_op * binop_mask[BinOps.ADD.value] +
@@ -558,8 +510,8 @@ class LearnableOp(torch.nn.Module):
             binop_mul_op * binop_mask[BinOps.MUL.value] +
             # binop_div_op * binop_mask[BinOps.DIV.value]
             binop_max_op * binop_mask[BinOps.MAX.value] +
-            binop_min_op * binop_mask[BinOps.MIN.value] +
-            (1.0 - softmax_src[0:1, :, :]) * binop_mask[BinOps.STEP.value]
+            binop_min_op * binop_mask[BinOps.MIN.value]
+            # (1.0 - softmax_src[0:1, :, :]) * binop_mask[BinOps.STEP.value]
         )
 
         # assert binop_result.isnan().any() == False
@@ -568,24 +520,26 @@ class LearnableOp(torch.nn.Module):
         unop_neg_op    = -dst
         unop_sin_op    = torch.sin(dst)
         unop_cos_op    = torch.cos(dst)
-        unop_exp_op    = torch.exp(dst.clamp(max=4.0))  # avoid overflow
-        unop_log_op    = torch.log(dst.clamp(min=1.0e-3).abs())
+        # unop_exp_op    = torch.exp(dst.clamp(max=4.0))  # avoid overflow
+        # unop_log_op    = torch.log(dst.clamp(min=1.0e-2).abs())
         unop_sqrt_op   = torch.sqrt(dst.abs())
         unop_square_op = torch.square(dst)
         unop_nop    = src0 # copy src to dest
         unop_result =  (
             unop_neg_op * unop_mask[UnOps.NEG.value] +
-            unop_sin_op * unop_mask[UnOps.SIN.value] +
-            unop_cos_op * unop_mask[UnOps.COS.value] +
-            unop_exp_op * unop_mask[UnOps.EXP.value] +
-            unop_log_op * unop_mask[UnOps.LOG.value] +
-            unop_nop     * unop_mask[UnOps.NOP.value] +
-            unop_square_op * unop_mask[UnOps.SQUARE.value] +
-            unop_sqrt_op * unop_mask[UnOps.SQRT.value]
+            # unop_sin_op * unop_mask[UnOps.SIN.value] +
+            # unop_cos_op * unop_mask[UnOps.COS.value] +
+            # unop_exp_op * unop_mask[UnOps.EXP.value] +
+            # unop_log_op * unop_mask[UnOps.LOG.value] +
+            unop_nop     * unop_mask[UnOps.NOP.value]
+            # unop_square_op * unop_mask[UnOps.SQUARE.value] +
+            # unop_sqrt_op * unop_mask[UnOps.SQRT.value]
         )
         # assert unop_result.isnan().any() == False
 
         store_const_op =  self.value
+
+        # assert store_const_op.isnan().any() == False
 
         result = registers * (1.0 - dest_mask) + (
             binop_result   * op_mask[OP_INDICES[BinOp]] +
@@ -612,8 +566,15 @@ target_image = transforms.ToTensor()(target_image).unsqueeze(0).to(torch_device)
 num_epochs = 100000
 
 src_registers    = torch.zeros((NUM_REGISTERS, IMAGE_SIZE, IMAGE_SIZE), dtype=torch.float32, device=torch_device)
+
 src_registers[0:1, :, :] = uv[0:1, :, :] * 2.0 - 1.0
 src_registers[1:2, :, :] = uv[1:2, :, :] * 2.0 - 1.0
+
+# for i in range(NUM_REGISTERS // 4):
+#     src_registers[i * 4 + 0, :, :] = torch.sin((uv[0:1, :, :]) * 3.14159265 * float(1 << (i + 1)))
+#     src_registers[i * 4 + 1, :, :] = torch.cos((uv[1:2, :, :]) * 3.14159265 * float(1 << (i + 1)))
+#     src_registers[i * 4 + 2, :, :] = torch.cos((uv[0:1, :, :]) * 3.14159265 * float(1 << (i + 1)))
+#     src_registers[i * 4 + 3, :, :] = torch.sin((uv[1:2, :, :]) * 3.14159265 * float(1 << (i + 1)))
 
 # import math
 # src_registers[2:3, :, :] = torch.sin(src_registers[0:1, :, :] * math.pi * 1.0)
@@ -636,123 +597,151 @@ for NUM_OPS in range(1, 256):
 
     print(f"{CONSOLE_COLOR_BLUE} === Training with {NUM_OPS} operations === {CONSOLE_COLOR_RESET}")
 
-    ops.append(LearnableOp(NUM_REGISTERS, torch_device))
+    best_ops = [op.clone() for op in ops]
+    # min_loss = 1.0e10
 
-    for j in range(10):
+    if NUM_OPS >= 4:
+        num_trials = 10
 
-        best_ops = [op.clone() for op in ops]
-        # min_loss = 1.0e10
+        trial_ops = []
 
         for i in range(0):
-            # print(f"Preselection iteration {i:04d}")
+            test_ops      = ops.copy()
+            collapsed_once = False
+            for op in test_ops:
+                if (random.random() < 0.01): # and not (op.collapsed):
+                    op.collapse()
+                    collapsed_once = True
+            if collapsed_once:
+                trial_ops.append(test_ops)
 
-            ops      = ops.copy()
-            for param in [param for op in ops for param in op.parameters()]:
-                l = random.random() * 0.1
-                param.data = param.data * (1.0 - l) + torch.randn_like(param) * l
+        scores = []
 
-            # for op in ops:
-            #     op.collapse()
+        if len(trial_ops) > 0:
+            for i in range(len(trial_ops)):
+                test_ops      = trial_ops[i]
 
-            registers = src_registers.clone()
-            for op in ops:
-                registers, masks = op(registers)
+                registers = src_registers.clone()
+                for op in test_ops:
+                    # registers[0:1, :, :] = uv[0:1, :, :] * 2.0 - 1.0
+                    # registers[1:2, :, :] = uv[1:2, :, :] * 2.0 - 1.0
+                    registers, masks = op(registers)
 
-            output_image = registers[-3:, :, :]
-            loss = torch.nn.functional.mse_loss(output_image, target_image)
+                output_image = registers[-3:, :, :]
+                loss = torch.nn.functional.mse_loss(output_image, target_image)
 
-            # loss = loss + lpips(output_image.unsqueeze(0), target_image)
+                if loss.isnan().any():
+                    print(f"Invalid loss detected")
+                    continue
 
-            if loss.isnan().any():
-                print(f"Invalid loss detected")
-                continue
+                scores.append(loss.item())
+                # scores.append(-output_image.std().item() - registers.std().item())  # encourage diverse outputs
+    
+            best_trial_idx = int(np.argmin(np.array(scores)))
+            best_ops      = trial_ops[best_trial_idx]
 
-            if loss.item() < min_loss:
-                min_loss = loss.item()
-                best_ops = ops
-                print(f"Preselection Loss = {loss.item():.6f}")
+            print(f"{CONSOLE_COLOR_GREEN} Preselection collapsed trial best loss = {scores[best_trial_idx]:.6f}{CONSOLE_COLOR_RESET}")
 
-        ops = [op.clone() for op in best_ops]
+        # if loss.item() < min_loss:
+        #     min_loss = loss.item()
+        #     best_ops = test_ops
+        #     # print(f"Preselection Loss = {loss.item():.6f}")
+        #     print(f"{CONSOLE_COLOR_GREEN} Collapsed at {loss.item():.6f}{CONSOLE_COLOR_RESET}")
 
-        optimizer = torch.optim.AdamW([param for op in ops for param in op.parameters()], lr=1e-2, weight_decay=1e-2)
-        # optimizer = torch.optim.AdamW([param for param in ops[-1].parameters()], lr=1e-2, weight_decay=1e-2)
-        # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-6)
-        lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(optimizer, total_iters=110, power=1.0)
+    ops = [op.clone() for op in best_ops]
 
-        # registers    = src_registers.clone()
-        # for op in ops[:-1]:
-        #     registers, masks = op(registers)
-        #     # op.collapse()
+    ops.append(LearnableOp(NUM_REGISTERS, torch_device))
 
-        # last_registers = registers.detach().clone()
+    optimizer = torch.optim.AdamW([param for op in ops for param in op.parameters()], lr=1e-2, weight_decay=1e-2)
+    # optimizer = torch.optim.AdamW([param for param in ops[-1].parameters()], lr=1e-2, weight_decay=1e-2)
+    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-6)
+    lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(optimizer, total_iters=1000, power=1.0)
 
+    # registers    = src_registers.clone()
+    # for op in ops[:-1]:
+    #     registers, masks = op(registers)
+    #     # op.collapse()
 
-        for epoch in range(110):
-            
-            loss = 0.0
+    # last_registers = registers.detach().clone()
 
-           # if epoch < 50:
-           #     for op in ops:
-           #         op.freeze_selectors()
-           # else:
-           #     for op in ops:
-           #         op.unfreeze_selectors()
+    # for op in ops:
+    #     if random.random() < 0.1:
+    #         op.collapse()
 
-            # for op in ops:
-            #     op.collapse()
+    num_epochs = 1000
 
-            # registers = last_registers.clone()
-            registers = src_registers.clone()
+    for epoch in range(num_epochs):
 
-            for op in ops:
-                registers, masks = op(registers)
-                
-                # op.collapse()
-                    
-                # registers, masks = ops[-1](registers)
-
-                # loss = loss + 0.1 * -((masks + 1.0e-6).log() * masks).mean()  # encourage sharp selections
-
-            output_image = registers[-3:, :, :]
-
-            mse_loss = torch.nn.functional.mse_loss(output_image, target_image + torch.randn_like(target_image) * 0.05)
-            
-            # lpips_loss = lpips(output_image.unsqueeze(0), target_image)
-
-            loss = loss + mse_loss # + lpips_loss
-
-            if loss.isnan().any():
-                print(f"Invalid loss detected, resetting to best ops")
-                ops = [op.clone() for op in best_ops]
-                break
+        temperature = max(0.1, 1.0 - epoch / num_epochs)
         
-            min_loss = loss.item()
+        loss = 0.0
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            lr_scheduler.step()
+        # if epoch < 50:
+        #     for op in ops:
+        #         op.freeze_selectors()
+        # else:
+        #     for op in ops:
+        #         op.unfreeze_selectors()
 
-            print(f"Epoch {epoch:04d}: Loss = {loss.item():.6f}")
+        # for op in ops:
+        #     op.collapse()
 
-            if epoch % 16 == 0:
-                registers = src_registers.clone()
-                for op in ops:
-                    registers, masks = op(registers, collapse=False)
-                    # registers, masks = op(registers)
-                output_image = registers[-3:, :, :]
+        # registers = last_registers.clone()
+        registers = src_registers.clone()
 
-                dds = dds_from_tensor(output_image.unsqueeze(0))  # 1 x 3 x H x W
-                dds.save(".tmp/output_image.dds")
+        for op in ops:
+            # registers[0:1, :, :] = uv[0:1, :, :] * 2.0 - 1.0
+            # registers[1:2, :, :] = uv[1:2, :, :] * 2.0 - 1.0
+            registers, masks = op(registers, temperature=temperature)
+            
+            # op.collapse()
+                
+            # registers, masks = ops[-1](registers)
 
-                registers = src_registers.clone()
-                for op in ops:
-                    registers, masks = op(registers, collapse=True)
-                    # registers, masks = op(registers)
-                output_image = registers[-3:, :, :]
+            # loss = loss - registers.std() * 0.5  # encourage diverse register values
 
-                dds = dds_from_tensor(output_image.unsqueeze(0))  # 1 x 3 x H x W
-                dds.save(".tmp/output_image_collapsed.dds")
+            # loss = loss + -((masks + 1.0e-6).log() * masks).mean()  # encourage sharp selections
+
+        output_image = registers[-3:, :, :]
+
+        mse_loss = torch.nn.functional.mse_loss(output_image, target_image + torch.randn_like(target_image) * 0.05)
+        
+        # lpips_loss = lpips(output_image.unsqueeze(0), target_image)
+
+        loss = loss + mse_loss # - output_image.std() * 0.5  # encourage diverse outputs
+
+        if loss.isnan().any():
+            print(f"Invalid loss detected, resetting to best ops")
+            ops = [op.clone() for op in best_ops]
+            break
+    
+        min_loss = loss.item()
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        lr_scheduler.step()
+
+        print(f"Epoch {epoch:04d}: Loss = {loss.item():.6f}")
+
+        if epoch % 16 == 0:
+            registers = src_registers.clone()
+            for op in ops:
+                # registers[0:1, :, :] = uv[0:1, :, :] * 2.0 - 1.0
+                # registers[1:2, :, :] = uv[1:2, :, :] * 2.0 - 1.0
+                registers, masks = op(registers, temperature=temperature)
+                # registers, masks = op(registers)
+            output_image = registers[-3:, :, :]
+            dds = dds_from_tensor(output_image.unsqueeze(0))  # 1 x 3 x H x W
+            dds.save(".tmp/output_image.dds")
+
+            # registers = src_registers.clone()
+            # for op in ops:
+            #     registers, masks = op(registers, collapse=True)
+            #     # registers, masks = op(registers)
+            # output_image = registers[-3:, :, :]
+            # dds = dds_from_tensor(output_image.unsqueeze(0))  # 1 x 3 x H x W
+            # dds.save(".tmp/output_image_collapsed.dds")
 
     # uv_dds       = dds_from_tensor(uv.unsqueeze(0))  # 1 x 2 x H x W
     # uv_dds.save(get_or_create_tmp_folder() / "uv.dds")

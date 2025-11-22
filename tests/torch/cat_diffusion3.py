@@ -33,6 +33,11 @@ import math
 import numpy as np
 from pytorch_optimizer import Muon, SOAP, AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR, PolynomialLR
+import argparse
+
+args = argparse.ArgumentParser()
+args.add_argument("--freeze_vae", default=False, action="store_true", help="Freeze VAE weights during training")
+args = args.parse_args()
 
 assert torch.cuda.is_available()
 print(torch.cuda.current_device())
@@ -46,25 +51,26 @@ import torch.nn.functional as F
 import math
 import numpy as np
 
-LATENT_DIM = 512
-PATCH_DIM = 16
+LATENT_DIM = 3
+PATCH_DIM = 1
 
 class EncoderBlock(nn.Module):
     def __init__(self, channels, groups=1, skip=True):
         super(EncoderBlock, self).__init__()
         self.dwconv    = nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=3, stride=1, padding=1, bias=True, groups=groups)
         self.pwconv1   = nn.Conv2d(in_channels=channels, out_channels=channels * 2, kernel_size=1, stride=1, padding=0, bias=True)
-        self.bn1       = nn.BatchNorm2d(channels * 2)
+        # self.bn1       = nn.BatchNorm2d(channels)
         self.act       = nn.GELU()
         # self.act       = nn.LeakyReLU(0.01, inplace=True)
         self.pwconv2   = nn.Conv2d(in_channels=channels * 2, out_channels=channels, kernel_size=1, stride=1, padding=0, bias=True)
         self.skip      = skip
 
     def forward(self, x):
+        # x        = self.bn1(x)
         identity = x
         out      = self.dwconv(x)
         out      = self.pwconv1(out)
-        out      = self.bn1(out)
+        # out      = self.bn1(out)
         out      = self.act(out)
         out      = self.pwconv2(out)
         if self.skip:
@@ -304,119 +310,109 @@ class ROPE(nn.Module):
     def forward(self, x):
         return apply_rope_2d(x)
 
-class VAE(nn.Module):
-    def __init__(self, image_channels=3):
-        super(VAE, self).__init__()
-        self.encoder = nn.Sequential(
-            nn.Conv2d(image_channels, 32, kernel_size=3, stride=1, padding=1),
-            EncoderBlock(channels=32),
-            DownsampleBlock(in_channels=32, out_channels=64),
-            EncoderBlock(channels=64),
-            DownsampleBlock(in_channels=64, out_channels=128),
-            EncoderBlock(channels=128),
-            DownsampleBlock(in_channels=128, out_channels=256),
-            EncoderBlock(channels=256),
-            DownsampleBlock(in_channels=256, out_channels=LATENT_DIM),
-            EncoderBlock(channels=LATENT_DIM),
-        )
+class StaticTokens(nn.Module):
+    def __init__(self, dim, num_tokens):
+        super(StaticTokens, self).__init__()
 
-        # Latent space projections
-        self.fc_mu      = nn.Conv2d(LATENT_DIM, LATENT_DIM, kernel_size=1, padding=0)
-        self.fc_logvar  = nn.Conv2d(LATENT_DIM, LATENT_DIM, kernel_size=1, padding=0)
-
-        self.decoder = nn.Sequential(
-            EncoderBlock(channels=LATENT_DIM),
-            UpsampleBlock(in_channels=LATENT_DIM, out_channels=256),
-            EncoderBlock(channels=256),
-            UpsampleBlock(in_channels=256, out_channels=128),
-            EncoderBlock(channels=128),
-            UpsampleBlock(in_channels=128, out_channels=64),
-            EncoderBlock(channels=64),
-            UpsampleBlock(in_channels=64, out_channels=32),
-            EncoderBlock(channels=32),
-            nn.Conv2d(32, image_channels, kernel_size=3, stride=1, padding=1),
-        )
-
-    def encode(self, x, sample=True):
-        e = self.encoder(x)
-        latents_mu     = self.fc_mu(e)
-        latents_logvar = self.fc_logvar(e)
-
-        # Reparameterization trick
-        if sample:
-            std = torch.exp(0.5 * latents_logvar)
-            eps = torch.randn_like(std)
-            z   = latents_mu + eps * std
-        else:
-            z = latents_mu
-
-        return z, latents_mu, latents_logvar
-
-    def decode(self, x): return self.decoder(x)
+        self.tokens = nn.Parameter(torch.randn(1, dim, 1, num_tokens))
 
     def forward(self, x):
-        assert False, "Not implemented"
+        batch_size = x.size(0)
+
+        batched = self.tokens.expand(batch_size, -1, -1, -1)
+
+        return torch.cat([x, batched], dim=3)
+
+class RemoveStaticTokens(nn.Module):
+    def __init__(self, num_tokens):
+        super(RemoveStaticTokens, self).__init__()
+        self.num_tokens = num_tokens
+
+    def forward(self, x):
+        return x[:, :, :, :-self.num_tokens]
+
+class ImageToTokens(nn.Module):
+    def __init__(self):
+        super(ImageToTokens, self).__init__()
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        x = x.view(B, C, 1, H * W) # B, C, 1, N
+
+        return x
+
+class TokensToImage(nn.Module):
+    def __init__(self):
+        super(TokensToImage, self).__init__()
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        W = H = int(math.sqrt(W))
+        x = x.view(B, C, H, W)  # B, H, W, C
+        return x
 
 
 class VAEDiffusion(nn.Module):
     def __init__(self):
         super(VAEDiffusion, self).__init__()
 
-        # self.dm_convs = nn.Sequential(*[
-        #     EncoderBlock(channels=512),
-        #     nn.BatchNorm2d(512),
-        #     EncoderBlock(channels=512),
-        #     nn.BatchNorm2d(512),
-        #     EncoderBlock(channels=512),
-        #     nn.BatchNorm2d(512),
-        # ])
         time_dim = 128
+        EXPAND_DIM = 512
+        self.expand_dim = EXPAND_DIM
+
         self.time_dim   = time_dim
         self.time_embed = SinusoidalPositionalEmbedding(time_dim)
         self.time_mlp = nn.Sequential(
             nn.Linear(time_dim, time_dim * 4),
             nn.GELU(),
-            nn.Linear(time_dim * 4, LATENT_DIM),
+            nn.Linear(time_dim * 4, EXPAND_DIM),
         )
+
+        self.expand = nn.Conv2d(LATENT_DIM, EXPAND_DIM, kernel_size=1, stride=1, padding=0)
 
         self.backbone = nn.Sequential(*[
-            EncoderBlock(channels=512),
-            nn.BatchNorm2d(512),
-            EncoderBlock(channels=512),
-            nn.BatchNorm2d(512),
-            EncoderBlock(channels=512),
-            nn.BatchNorm2d(512),
+            nn.BatchNorm2d(EXPAND_DIM),
+            DownsampleBlock(in_channels=EXPAND_DIM, out_channels=EXPAND_DIM),
+            nn.BatchNorm2d(EXPAND_DIM),
+            DownsampleBlock(in_channels=EXPAND_DIM, out_channels=EXPAND_DIM),
+            nn.BatchNorm2d(EXPAND_DIM),
+
+            # EncoderBlock(channels=LATENT_DIM),
+            # EncoderBlock(channels=LATENT_DIM),
+            # EncoderBlock(channels=LATENT_DIM),
+
+            *[EncoderBlock(channels=EXPAND_DIM) for _ in range(4)],
 
             ROPE(),
-            nn.Conv2d(LATENT_DIM, LATENT_DIM, kernel_size=1, stride=1, padding=0),
-            nn.Dropout2d(0.05),
-            *[SelfAttentionBlock(embed_dim=LATENT_DIM, num_heads=8) for _ in range(4)],
-            nn.Conv2d(LATENT_DIM, LATENT_DIM, kernel_size=1, stride=1, padding=0),
+
+            # nn.Conv2d(LATENT_DIM, LATENT_DIM, kernel_size=1, stride=1, padding=0),
+            # EncoderBlock(channels=LATENT_DIM),
+            # nn.Dropout2d(0.05),
+            ImageToTokens(),
+            StaticTokens(dim=EXPAND_DIM, num_tokens=64),
+            *[SelfAttentionBlock(embed_dim=EXPAND_DIM, num_heads=8) for _ in range(4)],
+            RemoveStaticTokens(num_tokens=64),
+            TokensToImage(),
+            # nn.Conv2d(LATENT_DIM, LATENT_DIM, kernel_size=1, stride=1, padding=0),
+            
+            nn.BatchNorm2d(EXPAND_DIM),
+            UpsampleBlock(in_channels=EXPAND_DIM, out_channels=EXPAND_DIM),
+            nn.BatchNorm2d(EXPAND_DIM),
+            UpsampleBlock(in_channels=EXPAND_DIM, out_channels=EXPAND_DIM),
         ])
-        # self.dm_e_conv_3 = EncoderBlock(channels=512)
 
-        self.velocity_decoder = nn.Sequential(
-            nn.Conv2d(in_channels=LATENT_DIM + LATENT_DIM, out_channels=LATENT_DIM, kernel_size=3, stride=1, padding=1),
-            EncoderBlock(channels=LATENT_DIM),
-            EncoderBlock(channels=LATENT_DIM),
-            EncoderBlock(channels=LATENT_DIM),
-            nn.Conv2d(LATENT_DIM, LATENT_DIM, kernel_size=1, stride=1, padding=0),
-        )
+        self.contract = nn.Conv2d(EXPAND_DIM, LATENT_DIM, kernel_size=1, stride=1, padding=0)
 
-
-    def get_grad(self, _z):
-        z = _z
+    def get_grad(self, _z, noise_level):
+        z = self.expand(_z)
         B, C, H, W = z.shape
-        # z = self.dm_convs(z)
-        # time_embedding = self.time_embed(t)
-        # z = z + self.time_mlp(time_embedding).view(B, LATENT_DIM, 1, 1)
-        z = self.backbone(z)
-        # z = self.dm_e_conv_3(z)
+        time_embedding = self.time_embed(noise_level)
+        z = z + self.time_mlp(time_embedding).view(B, self.expand_dim, 1, 1)
+        # z = self.backbone(torch.cat([z, recurrent], dim=1))
+        z = self.backbone(torch.cat([z, ], dim=1))
+        # z, recurrent = z.chunk(2, dim=1)
 
-        velocity_input = torch.cat([_z, z], dim=1)
-        z = self.velocity_decoder(velocity_input)
-
-        return z
+        return self.contract(z)# , torch.nn.functional.tanh(recurrent)
 
     def forward(self, x):
         assert False, "Not implemented"
@@ -429,7 +425,7 @@ class GAN(nn.Module):
         self.dm_self_attn_bk = nn.Sequential(*[
             nn.Conv2d(3, PATCH_DIM*PATCH_DIM*3, kernel_size=PATCH_DIM, stride=PATCH_DIM, padding=0),
             ROPE(),
-            *[SelfAttentionBlock(embed_dim=PATCH_DIM*PATCH_DIM*3, num_heads=8) for _ in range(4)],
+            *[SelfAttentionBlock(embed_dim=PATCH_DIM*PATCH_DIM*3, num_heads=8) for _ in range(8)],
             nn.Conv2d(PATCH_DIM*PATCH_DIM*3, LATENT_DIM, kernel_size=1, stride=1, padding=0),
         ])
         
@@ -472,20 +468,20 @@ class CatDataloader:
                 # Apply random augmentations
                 if random.random() < 0.5:
                     image = torch.flip(image, [3]) # horizontal flip
-                if random.random() < 0.5:
-                    image = torch.flip(image, [2]) # vertical flip
-                angle = random.choice([0, 90, 180, 270])
-                if angle != 0:
-                    image = torch.rot90(image, k=angle // 90, dims=[2, 3])
+                # if random.random() < 0.5:
+                #     image = torch.flip(image, [2]) # vertical flip
+                # angle = random.choice([0, 90, 180, 270])
+                # if angle != 0:
+                #     image = torch.rot90(image, k=angle // 90, dims=[2, 3])
                 
-                if random.random() < 0.5:
-                    # zoom
-                    scale = random.uniform(1.0, 2.2)
-                    new_size = int(64 * scale)
-                    image = F.interpolate(image, size=(new_size, new_size), mode='bicubic', align_corners=False)
-                    crop_x = random.randint(0, new_size - 64)
-                    crop_y = random.randint(0, new_size - 64)
-                    image = image[:, :, crop_x:crop_x+64, crop_y:crop_y+64]
+                # if random.random() < 0.5:
+                #     # zoom
+                #     scale = random.uniform(1.0, 2.2)
+                #     new_size = int(64 * scale)
+                #     image = F.interpolate(image, size=(new_size, new_size), mode='bicubic', align_corners=False)
+                #     crop_x = random.randint(0, new_size - 64)
+                #     crop_y = random.randint(0, new_size - 64)
+                #     image = image[:, :, crop_x:crop_x+64, crop_y:crop_y+64]
 
             return image
         while len(batch) < batch_size:
@@ -514,8 +510,8 @@ dataset = CatDataloader("data\\MNIST\\dataset-part1")
 assert dataset.next(1).shape == (1, 3, 64, 64), f"Unexpected shape: {dataset.next(1).shape}"
 size=64
 
-num_epochs          = 10000
-batch_size          = 256
+num_epochs          = 100000
+batch_size          = 32
 num_iters_train     = 11024
 num_iters           = 16
 
@@ -572,24 +568,20 @@ kodim = kodim[:, :, 0:512, 0:512]
 
 if 1:
     
-    vae_model = VAE().to(device)
     diff_model = VAEDiffusion().to(device)
     # gan_model = GAN().to(device)
 
     try: # Load the model
-        vae_model.load_state_dict(torch.load(".tmp/vae_model.pth"), strict=False)
         diff_model.load_state_dict(torch.load(".tmp/diff_model.pth"), strict=False)
         # gan_model.load_state_dict(torch.load(".tmp/gan_model.pth"), strict=False)
     except Exception as e:
         print("No model found, starting from scratch.")
 
 
-    # optimizer = SOAP(params=model.parameters(), lr=15e-4, weight_decay=1e-2)
-    vae_optimizer = AdamW(params=vae_model.parameters(), lr=1e-4, weight_decay=1e-2)
-    diff_optimizer = AdamW(params=diff_model.parameters(), lr=1e-4, weight_decay=1e-2)
-    # gan_optimizer = AdamW(params=gan_model.parameters(), lr=1e-4, weight_decay=1e-2)
+    diff_model_ema = copy.deepcopy(diff_model)
+    diff_model_ema.requires_grad_(False)
 
-    lr_scheduler = PolynomialLR(vae_optimizer, total_iters=num_epochs, power=1.0)
+    diff_optimizer = AdamW(params=diff_model.parameters(), lr=1e-4, weight_decay=1e-2)
     lr_scheduler2 = PolynomialLR(diff_optimizer, total_iters=num_epochs, power=1.0)
     # lr_scheduler3 = PolynomialLR(gan_optimizer, total_iters=num_epochs, power=1.0)
 
@@ -598,122 +590,125 @@ if 1:
     do_neg_training = False
     # model_param_checkpoint = copy.deepcopy(model.state_dict())
 
+    num_inference_steps = 64
+    timestamps = torch.linspace(0, num_inference_steps - 1, num_inference_steps).float().to(device) / num_inference_steps
+
     for epoch in range(num_epochs):
         if epoch % 16 == 0:
             with DelayedKeyboardInterrupt():
                 while True:
                     try:
-                        torch.save(vae_model.state_dict(), f".tmp/vae_model.pth")
                         torch.save(diff_model.state_dict(), f".tmp/diff_model.pth")
                         # torch.save(gan_model.state_dict(), f".tmp/gan_model.pth")
                         break
                     except Exception as e:
                         pass # Ignore file access issues or keyboard interrupts
 
-        if epoch == 0 or random.random() < 0.05:
+        # if epoch == 0 or random.random() < 0.05:
+        if 1:
             b = assemble_batch()
             
-            noise_level   = torch.rand(batch_size, 1, 4, 4, device=device)
+            t   = torch.rand(batch_size, 1, 1, 1, device=device).pow(1.0)
+
+            # pick randomly from timestamps
+            # for i in range(batch_size):
+            #     t_idx               = random.randint(0, num_inference_steps - 1)
+            #     t[i:i + 1, :, :, :]  = timestamps[t_idx:t_idx+1]
+
+            # shift = 1.0
+            # t     = shift * t / (1.0 + (shift - 1.0) * t)
+            # dt    = shift / (1.0 + (shift - 1.0) * t)**2 * 1.0 / num_inference_steps
+            # dt = 1.0 / num_inference_steps
+
             # noise_level_1 = noise_level * torch.rand(batch_size, 1, 1, 1, device=device)
-            noise_level_1 = noise_level * 0.2
-            z_src, latents_mu, latents_logvar = vae_model.encode(b, sample=False)
+            # noise_level_1 = noise_level * 0.2
+            z_src = b
             z_src = z_src.detach()
             z = z_src
             noise       = torch.randn_like(z)
-            noise1      = torch.randn_like(z)
-            z = z_src * (1 - noise_level) + noise * noise_level
-            # z1 = z_src * (1 - noise_level_1) + noise * noise_level_1
+            z = z_src + (noise - z_src) * (1.0 - t)
 
-        # VAE model step
-        vae_optimizer.zero_grad()
-        loss            = 0.0
-
-        # VAE encoder
-        _z, latents_mu, latents_logvar = vae_model.encode(b, sample=True)
-        decoded_ref = vae_model.decode(_z)
-        # validity = gan_model(decoded_ref)
-        # loss = loss + F.binary_cross_entropy(validity, torch.ones_like(validity)) * 1.0
-        loss = loss + (decoded_ref - b).square().mean() * 1.0
-        loss = loss + lpips(torch.clamp(b * 0.5 + 0.5, 0, 1), torch.clamp(decoded_ref * 0.5 + 0.5, 0, 1)) * 1.5
-
-         # KLD loss for latent space
-        kld_loss    = -0.5 * (1.0 + latents_logvar - latents_mu.pow(2) - latents_logvar.exp()).mean()
-        loss        = loss + 0.05 * kld_loss
-        
-        if loss.isnan().any():
-            print("NaN loss, exiting.")
-            exit(1)
-
-        loss.backward()
-        vae_optimizer.step()
-        
         # Diffusion model step
 
         diff_optimizer.zero_grad()
         loss           = 0.0
-        grad  = diff_model.get_grad(z)
-        # k =  (math.exp(iter / 16.0))
-        loss            = loss + (grad - (z_src - z)).square().mean() * 1.0 #
-        # loss            = loss + (1.0 - torch.nn.functional.cosine_similarity(grad, (z_src - z), dim=1)).mean() * 1.0 #
-        z = z + grad
-        # z = grad
-        decoded = vae_model.decode(z)
-        loss            = loss     + lpips(torch.clamp(b * 0.5 + 0.5, 0, 1), torch.clamp(decoded * 0.5 + 0.5, 0, 1))
-        # loss            = loss + (decoded - noisy_input).square().mean() * 0.15 # penalize big steps
-        loss            = loss + (decoded - b).square().mean() * 1.25 # penalize distance to target
+        for i in range(1):
+
+            # dt            = 1.0 / 2.0 * torch.rand_like(t)
+
+            grad          = diff_model.get_grad(z, t)
+
+            # grad_next = diff_model.get_grad(z + grad * dt, t + dt)
+            # grad_prev = diff_model.get_grad(z - grad * dt, t - dt)
+            z_next = z
+            t_next = t
+            N = random.randint(4, 16)
+            dt = (1.0 - t) / N
+            v_avg = torch.zeros_like(grad)
+            for i in range(N):
+                grad_ema      = diff_model_ema.get_grad(z_next + torch.rand_like(z) * 0.001, t_next)
+                z_next        = z_next + grad_ema * dt
+                t_next        = t_next + dt
+                v_avg         = v_avg + grad_ema / N
+
+            
+            # grad_ema_next = diff_model_ema.get_grad(z + grad_ema * dt + torch.rand_like(z) * 0.001, t + dt)
+            # grad_ema_prev = diff_model_ema.get_grad(z - grad_ema * dt + torch.rand_like(z) * 0.001, t - dt)
+
+            # k =  (math.exp(iter / 16.0))
+            loss            = loss + ((grad - (z_src - noise))).square().mean() * 1.0 #
+            # loss            = loss + ((grad - (grad_ema_next + grad_ema_prev) / 2.0)).square().mean() * 1.0 #
+            # loss            = loss + ((grad - (grad_ema * 2.0 + grad_ema_next + grad_ema_prev) / 4.0) * (-t * 4.0).exp()).square().mean() * 16.0 #
+            # loss            = loss + ((grad - (grad_ema * 1.0 + grad_ema_next + grad_ema_prev) / 3.0)).square().mean() * 1.0 #
+            loss            = loss + ((grad - v_avg) * (-t * 0.0).exp()).square().mean() * 1.0 #
+            # loss            = loss + (grad + noise).square().mean() * 1.0 #
+            # loss            = loss + (1.0 - torch.nn.functional.cosine_similarity(grad, (z_src - z), dim=1)).mean() * 1.0 #
+            # z = (z + grad * noise_level.sqrt()) / (1.0e-6 + (1 - noise_level).abs()).sqrt()
+            z               = z + grad * (1.0 - t)
+
+            # loss            = loss + ((z - z_src) / (1.0e-3 + (1.0 - t))).square().mean() * 1.25# penalize distance to target
+
+            # decoded         = z
+            # loss            = loss     + lpips(torch.clamp(b * 0.5 + 0.5, 0, 1), torch.clamp(decoded * 0.5 + 0.5, 0, 1))
+
+            # loss            = loss + (decoded - noisy_input).square().mean() * 0.15 # penalize big steps
+            # loss            = loss + ((decoded - b) / (1.0e-3 + noise_level)).square().mean() * 1.25# penalize distance to target
+            # loss            = loss + ((decoded - b) / (1.0e-3 + (1.0 - t))).square().mean() * 1.25# penalize distance to target
+
+            t = t + dt
+            # if i < 15:
+            #     sigma = 0.01
+            #     z = z * (1.0 - sigma) + torch.randn_like(z) * sigma
+            
+            # loss            = loss + ((z - z_src) / (1.0e-3 + noise_level)).square().mean() * 1.25# penalize distance to target
+            # loss            = loss + ((grad - (z_src - noise)) * torch.exp(-2.0 * noise_level)).square().mean() * 1.25# penalize distance to target
+            # loss            = loss + ((grad - (z_src - noise))).square().mean() * 1.0 # penalize distance to target
+
+            # noise_level = noise_level * 0.5
+
+        
         # validity = gan_model(decoded)
         # loss = loss + F.binary_cross_entropy(validity, torch.ones_like(validity)) * 1.0
 
-        # decoded_fake         = decoded.detach()
+            # decoded_fake         = decoded.detach()
+
+        for param_q, param_k in zip(diff_model.parameters(), diff_model_ema.parameters()):
+            gamma = 0.95
+            param_k.data = param_k.data * gamma + param_q.data * (1.0 - gamma)
 
         z               = z.detach()
+        # recurrent       = recurrent.detach()
 
         if loss.isnan().any():
             print("NaN loss, exiting.")
             exit(1)
 
-        sigma = 0.05
-        z     = z * (1.0 - sigma) + torch.randn_like(z) * sigma
-
-        loss.backward()
-        diff_optimizer.step()
-
-        # GAN GT step
-        # gan_optimizer.zero_grad()
-        # validity_real = gan_model(b)
-        # loss = 0.0
-        # loss = loss + F.binary_cross_entropy(validity_real, torch.ones_like(validity_real)) * 1.0
-        # 
-        # validity_fake = gan_model(decoded_fake.detach())
-        # loss = loss + F.binary_cross_entropy(validity_fake, torch.zeros_like(validity_fake)) * 1.0
-        # if loss.isnan().any():
-        #     print("NaN loss, exiting.")
-        #     exit(1)
-        # loss.backward()
-        # gan_optimizer.step()
-        
-        # Equilibium loss
-        diff_optimizer.zero_grad()
-        loss           = 0.0
-        grad           = diff_model.get_grad(z_src.detach())
-        loss           = loss + (grad).square().mean() * 1.0 #
-        
-        if loss.isnan().any():
-            print("NaN loss, exiting.")
-            exit(1)
-
-        loss.backward()
-        diff_optimizer.step()
-    
-        # mixin noise
-        # sigma = 0.05
+        # sigma = 0.
         # z     = z * (1.0 - sigma) + torch.randn_like(z) * sigma
-        
-        
-        # recurrent_features     = recurrent_features.detach()
-        
 
-        lr_scheduler.step()
+        loss.backward()
+        diff_optimizer.step()        
+
         lr_scheduler2.step()
 
 
@@ -723,13 +718,13 @@ if 1:
             
             with torch.no_grad():
             # if 1:
-            
+                decoded         = z
                 stack = torch.zeros((1, 3, 3 * size, batch_size * size), device=device)
                 
                 for batch_idx in range(batch_size):
-                    stack[0, :, 0:size, batch_idx*size:(batch_idx+1)*size]        = 0.5 + 0.5 * decoded[batch_idx:batch_idx+1, :, :, :]
-                    stack[0, :, size:size*2, batch_idx*size:(batch_idx+1)*size]   = 0.5 + 0.5 * decoded_ref[batch_idx:batch_idx+1, :, :, :]
-                    stack[0, :, 2*size:3*size, batch_idx*size:(batch_idx+1)*size] = 0.5 + 0.5 * b[batch_idx:batch_idx+1, :, :, :]
+                    stack[0, :, 0:size, batch_idx*size:(batch_idx+1)*size]      = 0.5 + 0.5 * decoded[batch_idx:batch_idx+1, :, :, :]
+                    stack[0, :, size:2*size, batch_idx*size:(batch_idx+1)*size] = 0.5 + 0.5 * b[batch_idx:batch_idx+1, :, :, :]
+                    stack[0, :, 2*size:3*size, batch_idx*size:(batch_idx+1)*size] = 0.5 + 0.5 * z_next [batch_idx:batch_idx+1, :, :, :]
                 dds = dds_from_tensor(stack)
                 dds.save(".tmp/input.dds")
 
@@ -739,17 +734,16 @@ if 1:
                 x = torch.randn(4, 3, 64, 64, device=device)
 
                 # sampling_steps = torch.linspace(num_diffusion_steps - 1, 0, num_iters).long().to(device)
-                
-                num_inference_steps = num_iters * 4
+            
 
                 viz_batch_size = 8
                 viz_size       = size * 1
                 _x              = torch.randn((viz_batch_size, 3, viz_size, viz_size), device=device)
                 x = _x
                 # x = kodim[:, :, :viz_size, :viz_size]
-                skip = 4
+                skip = 1
                 viz_stack      = torch.zeros((1, 3, (num_inference_steps // skip + 1) * viz_size, viz_batch_size * viz_size), device=device)
-                # viz_stack2      = torch.zeros((1, 3, (num_inference_steps // skip + 1) * viz_size, viz_batch_size * viz_size), device=device)
+                # viz_stack2      = torch.zeros((1, 3, (num_inference_steps // skip + 1) * 4, viz_batch_size * 4), device=device)
                 for batch_idx in range(viz_batch_size):
                     viz_stack[0, :, 0*viz_size:1*viz_size, batch_idx*viz_size:(batch_idx+1)*viz_size] = 0.5 + 0.5 * x[batch_idx:batch_idx+1, :, :, :]
                 gif_stack = []
@@ -766,29 +760,47 @@ if 1:
                 inf_z = None
                 # z, latents_mu, latents_logvar = model.encode(decoded, sample=False)
                 inf_z = torch.randn((viz_batch_size, LATENT_DIM, viz_size // PATCH_DIM, viz_size // PATCH_DIM), device=device)
+                recurrent = torch.randn((viz_batch_size, LATENT_DIM, viz_size // PATCH_DIM, viz_size // PATCH_DIM), device=device)
+
+                # inf_noise_level = 1.0
+                # inf_noise_level = torch.tensor([inf_noise_level], device=device).repeat(viz_batch_size).reshape(viz_batch_size, 1, 1, 1)
 
                 for step in range(num_inference_steps):
                     # t_batch = torch.full((viz_batch_size,), step_idx, device=device, dtype=torch.long)
-                    t = (step + 1) / (num_inference_steps)
-                    t = torch.tensor([t], device=device).repeat(viz_batch_size)
+                    t = (step) / (num_inference_steps)
+                    t = torch.tensor([t], device=device).repeat(viz_batch_size).reshape(viz_batch_size, 1, 1, 1)
+
+                    shift = 1.0
+                    t = shift * t / (1.0 + (shift - 1.0) * t)
+                    dt = shift / (1.0 + (shift - 1.0) * t)**2 * 1.0 / num_inference_steps
+
                     # grad = model(x)
-                    grad                   = diff_model.get_grad(inf_z)
-                    inf_z                      = inf_z + grad
+                    grad                   = diff_model.get_grad(inf_z, t)
+                    # inf_z                      = inf_z + grad / (num_inference_steps)
+                    # dt = 0.25
+                    # dt              = 1.0 / num_inference_steps
+                    inf_z           = inf_z + 1.0 * grad * dt
+                    # inf_noise_level  = inf_noise_level * (1.0 - dt)
+                    # inf_noise_level = inf_noise_level * 0.85
+                    # inf_z = (inf_z + grad * (1.0 - t).sqrt()) / (1.0e-6 + (1.0 - (1.0 - t)).abs()).sqrt()
                     # inf_z                      = grad
-                    x                      = vae_model.decode(inf_z)
-                    prev_x                 = x
+                    
                     # x                      = x + grad * torch.rand(viz_batch_size, device=device).view(-1, 1, 1, 1)
                     # x                      = x + grad * 1
-                    if step < num_inference_steps - 1:
-                        sigma = 0.01
-                        # x = x * (1.0 - sigma) + torch.randn_like(x) * sigma
-                        inf_z = inf_z * (1.0 - sigma) + torch.randn_like(inf_z) * sigma
+
+                    # if step < num_inference_steps - 1:
+                    #     sigma = (1.0 - t) * 0.025
+                    #     # x = x * (1.0 - sigma) + torch.randn_like(x) * sigma
+                    #     inf_z = inf_z * (1.0 - sigma) + torch.randn_like(inf_z) * sigma
+
+                    x                      = inf_z
+                    prev_x                 = x
 
                     gif_stack.append(torch.nn.functional.avg_pool2d(0.5 + 0.5 * x[0, :, :, :].detach().cpu(), kernel_size=2, stride=2))
                     if (step + 1) % skip == 0:
                         for batch_idx in range(viz_batch_size):
                             viz_stack[0, :, (step // skip+1)*viz_size:(step//skip+2)*viz_size, batch_idx*viz_size:(batch_idx+1)*viz_size] = 0.5 + 0.5 * x[batch_idx:batch_idx+1, :, :, :]
-                            # viz_stack2[0, :, (step // skip+1)*viz_size:(step//skip+2)*viz_size, batch_idx*viz_size:(batch_idx+1)*viz_size] = 0.5 + 0.5 * inf_recurrent_features[batch_idx:batch_idx+1, 0:3, :, :]
+                            # viz_stack2[0, :, (step // skip+1)*4:(step//skip+2)*4, batch_idx*4:(batch_idx+1)*4] = 0.5 + 0.5 * recurrent[batch_idx:batch_idx+1, 0:3, :, :]
                     
 
                 if 0:
@@ -819,9 +831,9 @@ if 1:
                 dds.save(".tmp/output.dds")
 
                  # Visualize latent space
-                viz_stack = torch.zeros((1, 3, 4, viz_batch_size * 4), device=device)
+                viz_stack = torch.zeros((1, 3, size // PATCH_DIM, viz_batch_size * (size // PATCH_DIM)), device=device)
                 for i in range(viz_batch_size):
-                    viz_stack[0, :, :, i*4:(i+1)*4] = inf_z[i:i+1, 0:3, :, :]
+                    viz_stack[0, :, :, i*(size // PATCH_DIM):(i+1)*(size // PATCH_DIM)] = inf_z[i:i+1, 0:3, :, :]
 
                 # Save the visualization
                 dds = dds_from_tensor(viz_stack)

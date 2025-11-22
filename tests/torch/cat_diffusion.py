@@ -495,7 +495,7 @@ if 1:
         if epoch % 16 == 0:
             print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
             
-            # Generate samples using your iterative approach
+            
             with torch.no_grad():
                 stack = torch.zeros((1, 3, 3 * size, batch_size * size), device=device)
                 

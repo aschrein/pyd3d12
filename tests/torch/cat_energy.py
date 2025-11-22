@@ -608,8 +608,8 @@ if 1:
         optimizer.zero_grad()
         loss = 0.0
 
-        noisy_input             = (noisy_input).clone().detach()
-        noisy_input.requires_grad    = True
+        noisy_input                 = (noisy_input).clone().detach()
+        noisy_input.requires_grad   = True
 
         for ridx in range(2):
             grad_point                  = noisy_input
@@ -699,7 +699,7 @@ if 1:
         if epoch % 16 == 0:
             print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
             
-            # Generate samples using your iterative approach
+            
             # with torch.no_grad():
             if 1:
                 stack = torch.zeros((1, 3, 4 * size, batch_size * size), device=device)

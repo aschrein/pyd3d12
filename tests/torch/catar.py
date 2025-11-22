@@ -613,7 +613,7 @@ if 1:
         if epoch == 0 or random.random() < 0.05:
             b = assemble_batch()
             
-            noise_level   = torch.rand(batch_size, 1, 4, 4, device=device)
+            noise_level   = torch.rand(batch_size, 1, 1, 1, device=device)
             # noise_level_1 = noise_level * torch.rand(batch_size, 1, 1, 1, device=device)
             noise_level_1 = noise_level * 0.2
             z_src, latents_mu, latents_logvar = vae_model.encode(b, sample=False)
@@ -621,7 +621,7 @@ if 1:
             z = z_src
             noise       = torch.randn_like(z)
             noise1      = torch.randn_like(z)
-            z = z_src * (1 - noise_level) + noise * noise_level
+            z = z_src * (1 - noise_level).abs().sqrt() + noise * noise_level.sqrt()
             # z1 = z_src * (1 - noise_level_1) + noise * noise_level_1
 
         # VAE model step
@@ -654,8 +654,9 @@ if 1:
         grad  = diff_model.get_grad(z)
         # k =  (math.exp(iter / 16.0))
         loss            = loss + (grad - (z_src - z)).square().mean() * 1.0 #
+        # loss            = loss + (grad - noise).square().mean() * 1.0 #
         # loss            = loss + (1.0 - torch.nn.functional.cosine_similarity(grad, (z_src - z), dim=1)).mean() * 1.0 #
-        z = z + grad
+        z = z + grad * 1.0 / 16.0
         # z = grad
         decoded = vae_model.decode(z)
         loss            = loss     + lpips(torch.clamp(b * 0.5 + 0.5, 0, 1), torch.clamp(decoded * 0.5 + 0.5, 0, 1))
@@ -773,7 +774,7 @@ if 1:
                     t = torch.tensor([t], device=device).repeat(viz_batch_size)
                     # grad = model(x)
                     grad                   = diff_model.get_grad(inf_z)
-                    inf_z                      = inf_z + grad
+                    inf_z                      = inf_z + grad * 1.0 / 16.0
                     # inf_z                      = grad
                     x                      = vae_model.decode(inf_z)
                     prev_x                 = x
