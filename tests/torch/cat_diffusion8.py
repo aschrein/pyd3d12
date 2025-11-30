@@ -355,6 +355,14 @@ def lanczos_kernel(x, a):
     lanczos = torch.where(torch.abs(x) < a, lanczos, torch.zeros_like(x))
     return lanczos
 
+def kernel(x, oscilation=True):
+    if oscilation:
+        return (1.0 - torch.clamp(x, max=1.0) ** 16.0) - 4.0 * torch.exp(x) * torch.sin(torch.clamp(x, min=1.0) - 1.0)
+    else:
+        return torch.maximum((1.0 - torch.clamp(x, max=1.0) ** 4.0), torch.exp(-4.0 * x))
+    
+
+
 class Diffusion(nn.Module):
     def __init__(self):
         super(Diffusion, self).__init__()
@@ -431,14 +439,18 @@ class Diffusion(nn.Module):
         dr = uv - offset  # (B, G, 2, H, W, tile_size, tile_size)
         dx, dy = dr[:, :, 0:1], dr[:, :, 1:2]
         dd = dx * dx * kx * kx + dy * dy * ky * ky + 2.0 * dx * dy * kxy * kx * ky
-        ww = torch.exp(-1.0 * dd) * torch.cos(6.0 * dd) # (B, G, 1, H, W, tile_size, tile_size)
+
+        
+        # ww = torch.exp(-10.0 * dd) * (torch.cos(64.0 * dd) + torch.sin(64.0 * dd) + torch.cos(16.0 * dd) + torch.sin(4.0 * dd)) / 2.2 # (B, G, 1, H, W, tile_size, tile_size)
+        
+        ww = kernel(2.0 * dd)
         # ww = lanczos_kernel(dd, 1.0 / 4.0)
         # if tile_size > 8:
         #     ww = torch.exp(-64.0 * dd) * torch.cos(6.0 * dd) # (B, G, 1, H, W, tile_size, tile_size)
             # ww = torch.clamp(1.0 - dd * 4.0, min=0.0)  
             # ww = lanczos_kernel(dd, 1.0 / 4.0)  
 
-        depth = torch.exp(-2.0 * dd) * torch.exp(weight - MAX_DEPTH / 2)
+        depth = kernel(2.0 * dd, oscilation=False) * torch.exp(weight - MAX_DEPTH / 2)
         depth = depth * depth
 
         # Accumulate over gaussians: (B, G, 3, H, W, tile_size, tile_size) -> (B, 3, H, W, tile_size, tile_size)
@@ -495,7 +507,8 @@ class Diffusion(nn.Module):
         dr = uv - offset  # (B, G*H*W, 2, img_h, img_w)
         dx, dy = dr[:, :, 0:1], dr[:, :, 1:2]
         dd = dx*dx*kx*kx + dy*dy*ky*ky + 2.0*dx*dy*kxy*kx*ky
-        ww = torch.exp(-1.0 * dd) * torch.cos(6.0 * dd)  # Same as local
+        # ww = torch.exp(-1.0 * dd) * torch.cos(6.0 * dd)  # Same as local
+        ww = kernel(2.0 * dd)
 
         depth = torch.exp(-2.0 * dd) * torch.exp(weight - MAX_DEPTH)
         depth = depth * depth  # Same as local
