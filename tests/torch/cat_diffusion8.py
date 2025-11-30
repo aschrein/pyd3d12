@@ -20,7 +20,6 @@ import argparse
 from einops import rearrange, reduce, repeat
 
 args = argparse.ArgumentParser()
-args.add_argument("--freeze_vae", default=False, action="store_true", help="Freeze VAE weights during training")
 args = args.parse_args()
 
 assert torch.cuda.is_available()
@@ -348,6 +347,14 @@ class InferenceQuantization(nn.Module):
             return x.to(dtype=torch.float8_e4m3fn).to(dtype=torch.float32)
         return x
 
+def lanczos_kernel(x, a):
+    torch.where(x.abs() < 1e-6, torch.tensor(1e-6, device=x.device), x)
+    sinc_x = torch.sin(math.pi * x) / (math.pi * x)
+    sinc_x_a = torch.sin(math.pi * x / a) / (math.pi * x / a)
+    lanczos = sinc_x * sinc_x_a
+    lanczos = torch.where(torch.abs(x) < a, lanczos, torch.zeros_like(x))
+    return lanczos
+
 class Diffusion(nn.Module):
     def __init__(self):
         super(Diffusion, self).__init__()
@@ -374,97 +381,145 @@ class Diffusion(nn.Module):
             InferenceQuantization(self),
 
             ImageToTokens(),
-            StaticTokens(dim=EXPAND_DIM, num_tokens=64),
             *[SelfAttentionBlock(self, embed_dim=EXPAND_DIM, num_heads=8) for _ in range(16)],
+            TokensToImage(),
+
         ])
 
-        self.dictionary_size = 64
-
-        self.projection     = nn.Conv2d(EXPAND_DIM, self.dictionary_size, kernel_size=1, stride=1, padding=0)
-        self.lut_projection = nn.Linear(EXPAND_DIM, 3 * (8 + 8))
-
+        self.params_per_gaussian = (2 + 3 + 3 + 1)  # offset, precision, color mean, weight
+        self.num_gaussians      = 16
+        self.dictionary_size    = self.params_per_gaussian * self.num_gaussians
+        self.projection         = nn.Conv2d(EXPAND_DIM, self.dictionary_size, kernel_size=1, stride=1, padding=0)
         self.safe_dict = {}
 
-    def quantize(self):
-        quantized_model = self
-        quantized_model.quantized = True
-        moduels_to_quantize = [
-           
-        ]
-        for module in moduels_to_quantize:
-            if isinstance(module, nn.Conv2d) or isinstance(module, nn.ConvTranspose2d) or isinstance(module, nn.Linear):
-                module.weight.data = module.weight.data.to(dtype=torch.float8_e4m3fn).to(dtype=torch.float32)
-                # if module.bias is not None:
-                #     module.bias.data = module.bias.data.to(dtype=torch.float8_e4m3fn)
+    def render_tiles(self, tiles, tile_size=8):
+        # tiles is (batch, self.dictionary_size, 8, 8)
+        B, C, H, W = tiles.shape
+        gaussian_params = tiles.view(B, self.num_gaussians, self.params_per_gaussian, H, W)
 
-            
-        return quantized_model
+        # Create UV grid: (1, 2, 1, 1, tile_size, tile_size)
+        x = torch.linspace(0, tile_size - 1, tile_size, device=tiles.device)
+        y = torch.linspace(0, tile_size - 1, tile_size, device=tiles.device)
+        uv = torch.stack(torch.meshgrid(x, y, indexing='xy'), dim=0)  # (2, tile_size, tile_size) 
+        uv = (uv + 0.5) / tile_size
+        uv = uv.view(1, 2, 1, 1, tile_size, tile_size)  # broadcast over B, G, H, W
 
-    def forward(self, _z, noise_level):
+        MAX_DEPTH = 64.0
+
+        # Extract and activate all parameters at once: (B, G, params, H, W)
+        offset = torch.tanh(gaussian_params[:, :, 0:2, :, :]) + 0.5  # (B, G, 2, H, W)
+        kx     = torch.sigmoid(gaussian_params[:, :, 2:3, :, :]) * 4.0
+        ky     = torch.sigmoid(gaussian_params[:, :, 3:4, :, :]) * 4.0
+        kxy    = torch.tanh(gaussian_params[:, :, 4:5, :, :])
+        color  = torch.sigmoid(gaussian_params[:, :, 5:8, :, :])  # (B, G, 3, H, W)
+        weight = torch.sigmoid(gaussian_params[:, :, 8:9, :, :]) * MAX_DEPTH
+
+        # Reshape for broadcasting: (B, G, C, H, W) -> (B, G, C, H, W, 1, 1)
+        offset = offset.unsqueeze(-1).unsqueeze(-1)  # (B, G, 2, H, W, 1, 1)
+        kx     = kx.unsqueeze(-1).unsqueeze(-1)
+        ky     = ky.unsqueeze(-1).unsqueeze(-1)
+        kxy    = kxy.unsqueeze(-1).unsqueeze(-1)
+        color  = color.unsqueeze(-1).unsqueeze(-1)   # (B, G, 3, H, W, 1, 1)
+        weight = weight.unsqueeze(-1).unsqueeze(-1)
+
+        # if tile_size > 8:
+        #     kx = 2.0
+        #     ky = 2.0
+        #     kxy = 0.0
+
+        # Compute Gaussian for all positions: (B, G, 1, H, W, tile_size, tile_size)
+        dr = uv - offset  # (B, G, 2, H, W, tile_size, tile_size)
+        dx, dy = dr[:, :, 0:1], dr[:, :, 1:2]
+        dd = dx * dx * kx * kx + dy * dy * ky * ky + 2.0 * dx * dy * kxy * kx * ky
+        ww = torch.exp(-1.0 * dd) * torch.cos(6.0 * dd) # (B, G, 1, H, W, tile_size, tile_size)
+        # ww = lanczos_kernel(dd, 1.0 / 4.0)
+        # if tile_size > 8:
+        #     ww = torch.exp(-64.0 * dd) * torch.cos(6.0 * dd) # (B, G, 1, H, W, tile_size, tile_size)
+            # ww = torch.clamp(1.0 - dd * 4.0, min=0.0)  
+            # ww = lanczos_kernel(dd, 1.0 / 4.0)  
+
+        depth = torch.exp(-2.0 * dd) * torch.exp(weight - MAX_DEPTH / 2)
+        depth = depth * depth
+
+        # Accumulate over gaussians: (B, G, 3, H, W, tile_size, tile_size) -> (B, 3, H, W, tile_size, tile_size)
+        result = (depth * ww * color).sum(dim=1)  # (B, 3, H, W, tile_size, tile_size)
+        wacc   = depth.sum(dim=1)                  # (B, 1, H, W, tile_size, tile_size)
+
+        result = result / (wacc + 1e-6)
+        result = rearrange(result, 'b c h w th tw -> b c (h th) (w tw)') * 2.0 - 1.0
+
+        return result
+
+    def render_tiles_global(self, tiles, tile_size=8):
+        # tiles is (batch, self.dictionary_size, H, W)
+        B, C, H, W = tiles.shape
+        gaussian_params = tiles.view(B, self.num_gaussians, self.params_per_gaussian, H, W)
+
+        # Global UV grid for full output image, normalized to [0, 1]
+        img_h, img_w = H * tile_size, W * tile_size
+        x = torch.linspace(0, img_w - 1, img_w, device=tiles.device)
+        y = torch.linspace(0, img_h - 1, img_h, device=tiles.device)
+        uv = torch.stack(torch.meshgrid(x, y, indexing='xy'), dim=0)  # (2, img_h, img_w)
+        uv = (uv + 0.5) / tile_size  # Now in tile units, not [0,1]
+        uv = uv.view(1, 1, 2, img_h, img_w)  # (1, 1, 2, img_h, img_w)
+
+        MAX_DEPTH = 64.0
+
+        # Token centers in tile units
+        token_x = torch.arange(W, device=tiles.device).float()
+        token_y = torch.arange(H, device=tiles.device).float()
+        token_centers = torch.stack(torch.meshgrid(token_x, token_y, indexing='xy'), dim=0)  # (2, H, W)
+        token_centers = token_centers.view(1, 1, 2, H, W)  # (1, 1, 2, H, W)
+
+        # Gaussian centers: token corner + local offset in [0, 1] within tile
+        offset_local = torch.tanh(gaussian_params[:, :, 0:2, :, :]) + 0.5  # (B, G, 2, H, W) in [0, 1]
+        offset = token_centers + offset_local  # (B, G, 2, H, W) in tile units
+
+        # Precision and other params (same as local)
+        kx     = torch.sigmoid(gaussian_params[:, :, 2:3, :, :]) * 4.0
+        ky     = torch.sigmoid(gaussian_params[:, :, 3:4, :, :]) * 4.0
+        kxy    = torch.tanh(gaussian_params[:, :, 4:5, :, :])
+        color  = torch.sigmoid(gaussian_params[:, :, 5:8, :, :])  # (B, G, 3, H, W)
+        weight = torch.sigmoid(gaussian_params[:, :, 8:9, :, :]) * MAX_DEPTH
+
+        # Flatten spatial token dims (H, W) into Gaussian dim
+        G = self.num_gaussians
+        offset = offset.permute(0, 1, 3, 4, 2).reshape(B, G * H * W, 2, 1, 1)
+        kx     = kx.reshape(B, G * H * W, 1, 1, 1)
+        ky     = ky.reshape(B, G * H * W, 1, 1, 1)
+        kxy    = kxy.reshape(B, G * H * W, 1, 1, 1)
+        color  = color.permute(0, 1, 3, 4, 2).reshape(B, G * H * W, 3, 1, 1)
+        weight = weight.reshape(B, G * H * W, 1, 1, 1)
+
+        # Evaluate every Gaussian at every pixel
+        dr = uv - offset  # (B, G*H*W, 2, img_h, img_w)
+        dx, dy = dr[:, :, 0:1], dr[:, :, 1:2]
+        dd = dx*dx*kx*kx + dy*dy*ky*ky + 2.0*dx*dy*kxy*kx*ky
+        ww = torch.exp(-1.0 * dd) * torch.cos(6.0 * dd)  # Same as local
+
+        depth = torch.exp(-2.0 * dd) * torch.exp(weight - MAX_DEPTH)
+        depth = depth * depth  # Same as local
+
+        # Sum over all Gaussians
+        result = (depth * ww * color).sum(dim=1)  # (B, 3, img_h, img_w)
+        wacc   = depth.sum(dim=1)                  # (B, 1, img_h, img_w)
+
+        result = result / (wacc + 1e-6)
+        result = result * 2.0 - 1.0
+
+        return result
+    
+    def forward(self, _z, noise_level, tile_size=8, use_global=False):
         z = self.expand(_z)
         B, C, H, W = z.shape
         time_embedding = self.time_embed(noise_level)
         z = z + self.time_mlp(time_embedding).view(B, self.time_dim, 1, 1)
         z = self.backbone(torch.cat([z, ], dim=1))
-        image_tokens, lut_tokens = z[:, :, :, :-64], z[:, :, :, -64:]
-        image_tokens = TokensToImage()(image_tokens)
-        lut_tokens = lut_tokens.reshape(B, self.expand_dim, 64).transpose(1, 2)  # B, 64, EXPAND_DIM
-
-        # print(f"image_tokens shape: {image_tokens.shape}")
-        # print(f"lut_tokens shape: {lut_tokens.shape}")
-
-        logits         = self.projection(image_tokens).tanh()  # B, LATENT_DIM, H, W
-        # print(f"logits shape: {logits.shape}")
-        lut_projection = self.lut_projection(lut_tokens).transpose(1, 2)  # B, 3*(8+8), 64
-        # each entry in the lut is 3(RGB) outer product of two 8-dim vectors
-        r_lut_x = lut_projection[:, 0:8, :].permute(0, 2, 1)  # B, 64, 8
-        r_lut_y = lut_projection[:, 8:16, :].permute(0, 2, 1)  # B, 64, 8
-        g_lut_x = lut_projection[:, 16:24, :].permute(0, 2, 1)  # B, 64, 8
-        g_lut_y = lut_projection[:, 24:32, :].permute(0, 2, 1)  # B, 64, 8
-        b_lut_x = lut_projection[:, 32:40, :].permute(0, 2, 1)  # B, 64, 8
-        b_lut_y = lut_projection[:, 40:48, :].permute(0, 2, 1)  # B, 64, 8
-        # Outer products
-        r_lut_xy = torch.einsum('bni,bnj->bnij', r_lut_x, r_lut_y).view(B, 64, 8, 8)  # B, 64, 8, 8
-        g_lut_xy = torch.einsum('bni,bnj->bnij', g_lut_x, g_lut_y).view(B, 64, 8, 8)  # B, 64, 8, 8
-        b_lut_xy = torch.einsum('bni,bnj->bnij', b_lut_x, b_lut_y).view(B, 64, 8, 8)  # B, 64, 8, 8
-        # stack rgb
-        lut = torch.stack([r_lut_xy, g_lut_xy, b_lut_xy], dim=2)  # B, 64, 3, 8, 8
-
-        lut_8  = lut[:, 0:16, :, :, :]   # B, 16, 3, 8, 8
-        lut_16 = lut[:, 16:32, :, :, :]  # B, 16, 3, 8, 8
-        lut_32 = lut[:, 32:48, :, :, :]  # B, 16, 3, 8, 8
-        lut_64 = lut[:, 48:64, :, :, :]  # B, 16, 3, 8, 8
-        
-        # lut_16 = F.interpolate(lut_16, scale_factor=2, mode='bilinear', align_corners=False)
-        # lut_32 = F.interpolate(lut_32, scale_factor=4, mode='bilinear', align_corners=False)
-        # lut_64 = F.interpolate(lut_64, scale_factor=8, mode='bilinear', align_corners=False)
-
-        logits_8   = torch.nn.functional.avg_pool2d(logits[:, 0:16, :, :], kernel_size=1, stride=1)
-        logits_16  = torch.nn.functional.avg_pool2d(logits[:, 16:32, :, :], kernel_size=2, stride=2)
-        logits_32  = torch.nn.functional.avg_pool2d(logits[:, 32:48, :, :], kernel_size=4, stride=4)
-        logits_64  = torch.nn.functional.avg_pool2d(logits[:, 48:64, :, :], kernel_size=8, stride=8)
-
-        tiles_8   = torch.einsum('blhw,blcxy->bchxwy', logits_8, lut_8)
-        tiles_16  = torch.einsum('blhw,blcxy->bchxwy', logits_16, lut_16)
-        tiles_32  = torch.einsum('blhw,blcxy->bchxwy', logits_32, lut_32)
-        tiles_64  = torch.einsum('blhw,blcxy->bchxwy', logits_64, lut_64)
-
-        tiles_8 = rearrange(tiles_8, 'b c h x w y -> b c (h x) (w y)')
-        tiles_16 = rearrange(tiles_16, 'b c h x w y -> b c (h x) (w y)')
-        tiles_32 = rearrange(tiles_32, 'b c h x w y -> b c (h x) (w y)')
-        tiles_64 = rearrange(tiles_64, 'b c h x w y -> b c (h x) (w y)')
-        
-        tiles_16  = F.interpolate(tiles_16, scale_factor=2, mode='bilinear', align_corners=False)
-        tiles_32  = F.interpolate(tiles_32, scale_factor=4, mode='bilinear', align_corners=False)
-        tiles_64  = F.interpolate(tiles_64, scale_factor=8, mode='bilinear', align_corners=False)
-
-        # combine tiles
-        result = tiles_8 + tiles_16 + tiles_32 + tiles_64  # B, C, h, x, w, y
-
-        # unfold tiles into the image by arranging them in a grid
-        # result  = tiles.contiguous().view(B, LATENT_DIM, H, W)
-        # result = rearrange(tiles, 'b c h x w y -> b c (h x) (w y)')
-
+        logits = self.projection(z)  # B, LATENT_DIM, H, W
+        if use_global:
+            result = self.render_tiles_global(logits, tile_size=tile_size)
+        else:
+            result = self.render_tiles(logits, tile_size=tile_size)
         return result
 
 class CatDataloader:
@@ -532,7 +587,7 @@ assert dataset.next(1).shape == (1, 3, 64, 64), f"Unexpected shape: {dataset.nex
 size=64
 
 num_epochs          = 100000
-batch_size          = 64
+batch_size          = 128
 num_iters_train     = 11024
 num_iters           = 16
 
@@ -583,7 +638,7 @@ except Exception as e:
     print("No model found, starting from scratch.")
 
 # filter_network  = FilterNetwork().to(device)
-diff_optimizer  = AdamW(params=diff_model.parameters(), lr=3e-4, weight_decay=1e-2)
+diff_optimizer  = AdamW(params=diff_model.parameters(), lr=1e-4, weight_decay=1e-2)
 lpips           = LPIPS().to(device)
 
 num_inference_steps = 64
@@ -638,18 +693,6 @@ for epoch in range(num_epochs):
             folder = ".tmp/viz_diffusion"
             os.makedirs(folder, exist_ok=True)
 
-            # dictionary_size = diff_model.lut.shape[0]
-            # lut_w = diff_model.lut.shape[2]
-            # stack = torch.zeros((1, 3, dictionary_size * lut_w, lut_w), device=device)
-
-            # for i in range(dictionary_size):
-            #     stack[0, :, i*lut_w:(i+1)*lut_w, 0*lut_w:1*lut_w] = 0.5 + 0.5 * diff_model.lut[i:i+1, :, :, :]
-            # dds = dds_from_tensor(stack)
-            # dds.save(f"{folder}/lut.dds")
-
-            # dds = dds_from_tensor(gram_matrix.expand(1, 1, -1, -1).expand(1, 4, -1, -1))
-            # dds.save(f"{folder}/gram_matrix.dds")
-
             decoded         = z
             stack = torch.zeros((1, 3, 4 * size, batch_size * size), device=device)
             
@@ -689,6 +732,10 @@ for epoch in range(num_epochs):
                 t           = shift * t / (1.0 + (shift - 1.0) * t)
                 dt          = shift / (1.0 + (shift - 1.0) * t)**2 * 1.0 / num_inference_steps
                 target      = quantized_inference_model(inf_z, t)
+
+                if step == num_inference_steps - 1:
+                    hirez_target  = quantized_inference_model(inf_z, t, tile_size=32, use_global=False)
+
                 inf_z       = inf_z + (target - inf_z) / (1.0 - t) * dt
                 # inf_z       = target
                 x           = inf_z
@@ -703,6 +750,9 @@ for epoch in range(num_epochs):
                     for batch_idx in range(viz_batch_size):
                         viz_stack[0, :, (step // skip+1)*viz_size:(step//skip+2)*viz_size, batch_idx*viz_size:(batch_idx+1)*viz_size] = 0.5 + 0.5 * inf_z[batch_idx:batch_idx+1, :, :, :]
                         
+
+            dds = dds_from_tensor(hirez_target[0:1] * 0.5 + 0.5)
+            dds.save(".tmp/hirez_target.dds")
 
             dds = dds_from_tensor(viz_stack)
             dds.save(".tmp/output.dds")
