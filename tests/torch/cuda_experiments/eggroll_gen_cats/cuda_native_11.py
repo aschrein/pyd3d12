@@ -744,7 +744,7 @@ __global__ void flash_attention_batched(
         __syncthreads();
         
         for (i32 i = tid; i < 256; i += 32) {
-            scores[i] = tmp_f32[i];
+            scores[i] = tmp_f32[i] * 16.0f; // Temperature scaling
         }
         __syncthreads();
         
@@ -1381,6 +1381,17 @@ class ViTWeights:
             self.proj_weights[i] = module.eggroll_accumulate_3d_fn(
                 stream.cuda_stream, self.proj_weights[i], fitness, sigma, lr, seed, layer_base + 1
             )
+    
+        stream.synchronize()
+        # Apply L2 decay
+
+        decay = 0.9999
+        self.patchifier *= decay
+        self.final_proj *= decay
+        self.learnable_patches *= decay
+        for i in range(self.num_layers):
+            self.qkv_weights[i] *= decay
+            self.proj_weights[i] *= decay
 
 
 # ============ Forward Pass ============
@@ -1477,8 +1488,8 @@ if __name__ == "__main__":
     batch_size      = 256    # Population size N
     num_heads       = 8
     num_layers      = 8
-    sigma           = 0.5    # Perturbation scale (sigma in paper)
-    lr              = 1.0    # Learning rate (alpha in paper)
+    sigma           = 0.1    # Perturbation scale (sigma in paper)
+    lr              = 1.0e-4    # Learning rate (alpha in paper)
     pe_scale        = 1.0
     num_epochs      = 1 << 14
     
