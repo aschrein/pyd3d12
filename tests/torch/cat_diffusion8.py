@@ -356,12 +356,16 @@ def lanczos_kernel(x, a):
     return lanczos
 
 def kernel(x, oscilation=True):
+    x = torch.where(
+        x.abs() > 2.0,
+        torch.tensor(2.0, device=x.device),
+        x
+    )
     if oscilation:
         return (1.0 - torch.clamp(x, max=1.0) ** 16.0) - 4.0 * torch.exp(x) * torch.sin(torch.clamp(x, min=1.0) - 1.0)
     else:
         return torch.maximum((1.0 - torch.clamp(x, max=1.0) ** 4.0), torch.exp(-4.0 * x))
     
-
 
 class Diffusion(nn.Module):
     def __init__(self):
@@ -430,32 +434,102 @@ class Diffusion(nn.Module):
         color  = color.unsqueeze(-1).unsqueeze(-1)   # (B, G, 3, H, W, 1, 1)
         weight = weight.unsqueeze(-1).unsqueeze(-1)
 
-        # if tile_size > 8:
-        #     kx = 2.0
-        #     ky = 2.0
-        #     kxy = 0.0
-
         # Compute Gaussian for all positions: (B, G, 1, H, W, tile_size, tile_size)
         dr = uv - offset  # (B, G, 2, H, W, tile_size, tile_size)
         dx, dy = dr[:, :, 0:1], dr[:, :, 1:2]
         dd = dx * dx * kx * kx + dy * dy * ky * ky + 2.0 * dx * dy * kxy * kx * ky
-
         
         # ww = torch.exp(-10.0 * dd) * (torch.cos(64.0 * dd) + torch.sin(64.0 * dd) + torch.cos(16.0 * dd) + torch.sin(4.0 * dd)) / 2.2 # (B, G, 1, H, W, tile_size, tile_size)
         
         ww = kernel(2.0 * dd)
-        # ww = lanczos_kernel(dd, 1.0 / 4.0)
-        # if tile_size > 8:
-        #     ww = torch.exp(-64.0 * dd) * torch.cos(6.0 * dd) # (B, G, 1, H, W, tile_size, tile_size)
-            # ww = torch.clamp(1.0 - dd * 4.0, min=0.0)  
-            # ww = lanczos_kernel(dd, 1.0 / 4.0)  
-
+       
         depth = kernel(2.0 * dd, oscilation=False) * torch.exp(weight - MAX_DEPTH / 2)
         depth = depth * depth
 
         # Accumulate over gaussians: (B, G, 3, H, W, tile_size, tile_size) -> (B, 3, H, W, tile_size, tile_size)
         result = (depth * ww * color).sum(dim=1)  # (B, 3, H, W, tile_size, tile_size)
         wacc   = depth.sum(dim=1)                  # (B, 1, H, W, tile_size, tile_size)
+
+        result = result / (wacc + 1e-6)
+        result = rearrange(result, 'b c h w th tw -> b c (h th) (w tw)') * 2.0 - 1.0
+
+        return result
+    
+    def render_tiles_3x3(self, tiles, tile_size=8):
+        # tiles is (batch, self.dictionary_size, H, W)
+        B, C, H, W = tiles.shape
+        gaussian_params = tiles.view(B, self.num_gaussians, self.params_per_gaussian, H, W)
+
+        # Create UV grid: (1, 2, 1, 1, tile_size, tile_size)
+        x = torch.linspace(0, tile_size - 1, tile_size, device=tiles.device)
+        y = torch.linspace(0, tile_size - 1, tile_size, device=tiles.device)
+        uv = torch.stack(torch.meshgrid(x, y, indexing='xy'), dim=0)  # (2, tile_size, tile_size)
+        uv = (uv + 0.5) / tile_size
+        uv = uv.view(1, 2, 1, 1, tile_size, tile_size)  # broadcast over B, G, H, W
+
+        MAX_DEPTH = 64.0
+
+        # Extract and activate all parameters: (B, G, *, H, W)
+        offset = torch.tanh(gaussian_params[:, :, 0:2, :, :]) + 0.5  # (B, G, 2, H, W)
+        kx     = torch.sigmoid(gaussian_params[:, :, 2:3, :, :]) * 4.0
+        ky     = torch.sigmoid(gaussian_params[:, :, 3:4, :, :]) * 4.0
+        kxy    = torch.tanh(gaussian_params[:, :, 4:5, :, :])
+        color  = torch.sigmoid(gaussian_params[:, :, 5:8, :, :])  # (B, G, 3, H, W)
+        weight = torch.sigmoid(gaussian_params[:, :, 8:9, :, :]) * MAX_DEPTH
+
+        # Pad all parameters for 3x3 neighborhood
+        # Shape: (B, G, C, H, W) -> (B, G, C, H+2, W+2)
+        pad = (1, 1, 1, 1)  # (W_left, W_right, H_top, H_bottom)
+        offset_pad = F.pad(offset, pad, mode='constant', value=0.5)
+        kx_pad     = F.pad(kx, pad, mode='constant', value=0)
+        ky_pad     = F.pad(ky, pad, mode='constant', value=0)
+        kxy_pad    = F.pad(kxy, pad, mode='constant', value=0)
+        color_pad  = F.pad(color, pad, mode='constant', value=0)
+        weight_pad = F.pad(weight, pad, mode='constant', value=-1e6)  # zero contribution when exponentiated
+
+        # Accumulate results
+        result = torch.zeros((B, 3, H, W, tile_size, tile_size), device=tiles.device)
+        wacc   = torch.zeros((B, 1, H, W, tile_size, tile_size), device=tiles.device)
+
+        # Iterate over 3x3 neighborhood offsets
+        for dy_tile in range(-1, 2):
+            for dx_tile in range(-1, 2):
+                h_start = 1 + dy_tile
+                w_start = 1 + dx_tile
+
+                # Extract shifted parameters
+                off_n = offset_pad[:, :, :, h_start:h_start+H, w_start:w_start+W]
+                kx_n  = kx_pad[:, :, :, h_start:h_start+H, w_start:w_start+W]
+                ky_n  = ky_pad[:, :, :, h_start:h_start+H, w_start:w_start+W]
+                kxy_n = kxy_pad[:, :, :, h_start:h_start+H, w_start:w_start+W]
+                col_n = color_pad[:, :, :, h_start:h_start+H, w_start:w_start+W]
+                wgt_n = weight_pad[:, :, :, h_start:h_start+H, w_start:w_start+W]
+
+                # Tile offset for neighbor coordinate transform
+                tile_offset = torch.tensor([dx_tile, dy_tile], device=tiles.device, dtype=tiles.dtype)
+                tile_offset = tile_offset.view(1, 2, 1, 1, 1, 1)
+
+                # Reshape for broadcasting: (B, G, C, H, W) -> (B, G, C, H, W, 1, 1)
+                off_n = off_n.unsqueeze(-1).unsqueeze(-1)
+                kx_n  = kx_n.unsqueeze(-1).unsqueeze(-1)
+                ky_n  = ky_n.unsqueeze(-1).unsqueeze(-1)
+                kxy_n = kxy_n.unsqueeze(-1).unsqueeze(-1)
+                col_n = col_n.unsqueeze(-1).unsqueeze(-1)
+                wgt_n = wgt_n.unsqueeze(-1).unsqueeze(-1)
+
+                # UV relative to neighbor tile's coordinate system
+                dr = uv - (off_n + tile_offset)  # (B, G, 2, H, W, tile_size, tile_size)
+                dx, dy = dr[:, :, 0:1], dr[:, :, 1:2]
+                dd = dx*dx*kx_n*kx_n + dy*dy*ky_n*ky_n + 2.0*dx*dy*kxy_n*kx_n*ky_n
+
+                ww = kernel(2.0 * dd)
+                # ww = torch.exp(-10.0 * dd)
+
+                depth = kernel(2.0 * dd, oscilation=False) * torch.exp(wgt_n - MAX_DEPTH / 2)
+                depth = depth * depth
+
+                result = result + (depth * ww * col_n).sum(dim=1)
+                wacc   = wacc + depth.sum(dim=1)
 
         result = result / (wacc + 1e-6)
         result = rearrange(result, 'b c h w th tw -> b c (h th) (w tw)') * 2.0 - 1.0
@@ -522,14 +596,16 @@ class Diffusion(nn.Module):
 
         return result
     
-    def forward(self, _z, noise_level, tile_size=8, use_global=False):
+    def forward(self, _z, noise_level, tile_size=8, use_global=False, use_3x3=True):
         z = self.expand(_z)
         B, C, H, W = z.shape
         time_embedding = self.time_embed(noise_level)
         z = z + self.time_mlp(time_embedding).view(B, self.time_dim, 1, 1)
         z = self.backbone(torch.cat([z, ], dim=1))
         logits = self.projection(z)  # B, LATENT_DIM, H, W
-        if use_global:
+        if use_3x3:
+            result = self.render_tiles_3x3(logits, tile_size=tile_size)
+        elif use_global:
             result = self.render_tiles_global(logits, tile_size=tile_size)
         else:
             result = self.render_tiles(logits, tile_size=tile_size)
@@ -600,7 +676,7 @@ assert dataset.next(1).shape == (1, 3, 64, 64), f"Unexpected shape: {dataset.nex
 size=64
 
 num_epochs          = 100000
-batch_size          = 128
+batch_size          = 100
 num_iters_train     = 11024
 num_iters           = 16
 
@@ -747,7 +823,7 @@ for epoch in range(num_epochs):
                 target      = quantized_inference_model(inf_z, t)
 
                 if step == num_inference_steps - 1:
-                    hirez_target  = quantized_inference_model(inf_z, t, tile_size=32, use_global=False)
+                    hirez_target  = quantized_inference_model(inf_z, t, tile_size=32, use_global=False, use_3x3=True)
 
                 inf_z       = inf_z + (target - inf_z) / (1.0 - t) * dt
                 # inf_z       = target
