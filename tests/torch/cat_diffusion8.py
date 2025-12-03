@@ -793,10 +793,16 @@ for epoch in range(num_epochs):
             dds = dds_from_tensor(stack)
             dds.save(".tmp/input.dds")
             x = torch.randn(4, 3, 64, 64, device=device)
-            viz_batch_size = 8
+            viz_batch_size = 1
             viz_size       = size * 1
+            validation_init = transforms.ToTensor()(Image.open("C:\\dev\\aschrein.github.io\\assets\\gen_cats3\\init_0.png")).unsqueeze(0).to(device) * 2 - 1
+            validation_init = validation_init[:, 0:3, 0:64, 0:64]
+
             _x              = torch.randn((viz_batch_size, 3, viz_size, viz_size), device=device)
-            x = _x
+            start_step      = 0
+            # start_step      = num_inference_steps // 2
+            # x               = torch.lerp(validation_init, _x, 1.0 - start_step / num_inference_steps)
+            x               = torch.lerp(validation_init, _x, 0.75)
             skip = 4
             viz_stack      = torch.zeros((1, 3, (num_inference_steps // skip + 1) * viz_size, viz_batch_size * viz_size), device=device)
             for batch_idx in range(viz_batch_size):
@@ -814,7 +820,7 @@ for epoch in range(num_epochs):
             quantized_inference_model.load_state_dict(state_dict)
             # quantized_inference_model = quantized_inference_model.quantize()
 
-            for step in range(num_inference_steps):
+            for step in range(start_step, num_inference_steps):
                 t           = (step) / (num_inference_steps)
                 t           = torch.tensor([t], device=device).repeat(viz_batch_size).reshape(viz_batch_size, 1, 1, 1)
                 shift       = 1.0
@@ -829,15 +835,17 @@ for epoch in range(num_epochs):
                 # inf_z       = target
                 x           = inf_z
                 prev_x      = x
-                # if step < num_inference_steps - 1:
-                #     sigma_noise = 0.01
-                #     noise       = torch.randn_like(x)
-                #     inf_z       = inf_z + noise * sigma_noise
+                if step < num_inference_steps - 1:
+                    sigma_noise = 0.01
+                    # inf_z = torch.lerp(inf_z, validation_init, sigma_noise)
+                    # noise       = torch.randn_like(x)
+                    # inf_z       = inf_z + noise * sigma_noise
+                    pass
 
                 gif_stack.append(torch.nn.functional.avg_pool2d(0.5 + 0.5 * inf_z[0, :, :, :].detach().cpu(), kernel_size=2, stride=2))
                 if (step + 1) % skip == 0:
                     for batch_idx in range(viz_batch_size):
-                        viz_stack[0, :, (step // skip+1)*viz_size:(step//skip+2)*viz_size, batch_idx*viz_size:(batch_idx+1)*viz_size] = 0.5 + 0.5 * inf_z[batch_idx:batch_idx+1, :, :, :]
+                        viz_stack[0, :, ((step - start_step) // skip+1)*viz_size:((step-start_step)//skip+2)*viz_size, batch_idx*viz_size:(batch_idx+1)*viz_size] = 0.5 + 0.5 * inf_z[batch_idx:batch_idx+1, :, :, :]
                         
 
             dds = dds_from_tensor(hirez_target[0:1] * 0.5 + 0.5)
