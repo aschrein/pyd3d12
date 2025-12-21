@@ -54,3 +54,8 @@ class DelayedKeyboardInterrupt:
         signal.signal(signal.SIGINT, self.old_handler)
         if self.signal_received:
             self.old_handler(*self.signal_received)
+
+
+def erf(x):
+    # return torch.sign(x) * torch.sqrt(1 - torch.exp(-x**2 * (4 / torch.pi + 0.147 * x**2) / (1 + 0.147 * x**2)))
+    return torch.sign(x) * torch.sqrt(1 - torch.exp(-x**2 * 1.24))

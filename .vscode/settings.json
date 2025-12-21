@@ -113,8 +113,10 @@
                 "-File",
                 "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/Tools/Launch-VsDevShell.ps1",
                 "-SkipAutomaticLocation",
+                "-Arch",
+                "amd64"
             ]
         }
     },
-    "terminal.integrated.defaultProfile.windows": "StartBatProfile",
+    "terminal.integrated.defaultProfile.windows": "Developer PowerShell for VS 2022"
 }

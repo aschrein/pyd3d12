@@ -94,6 +94,8 @@ public:
     void   Wait() { WaitForSingleObject(event, INFINITE); }
 };
 
+class ID3D12DeviceWrapper;
+
 class ID3D12FenceWrapper {
 public:
     ID3D12Fence * fence  = nullptr;
@@ -110,6 +112,7 @@ public:
     void   Signal(UINT64 value) { fence->Signal(value); }
     UINT64 GetCompletedValue() { return fence->GetCompletedValue(); }
     void   SetEventOnCompletion(UINT64 value, std::shared_ptr<EventWrapper> Event) { fence->SetEventOnCompletion(value, Event->Get()); }
+    UINT64 GetRawPtr() { return (UINT64)fence; }
 };
 class ID3D12PipelineStateWrapper {
 public:
@@ -1114,6 +1117,21 @@ public:
         device->CreateUnorderedAccessView(pResource->resource, pCounterResource ? pCounterResource->resource : nullptr, &Desc, DestDescriptor);
     }
     void CreateSampler(const D3D12_SAMPLER_DESC &Desc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) { device->CreateSampler(&Desc, DestDescriptor); }
+
+    UINT64 CreateSharedHandle(
+        uint64_t device_child_raw_ptr,
+        std::optional<SECURITY_ATTRIBUTES> SecurityAttributes,
+        DWORD Access,
+        std::optional<std::wstring> Name
+    ) {
+        HANDLE handle = nullptr;
+        HRESULT hr = device->CreateSharedHandle(
+            (ID3D12DeviceChild*)device_child_raw_ptr, SecurityAttributes ? &SecurityAttributes.value() : nullptr, Access,
+            Name ? Name.value().c_str() : nullptr, &handle);
+
+        ASSERT_HRESULT_PANIC(hr);
+        return (UINT64)handle;
+    }
 };
 
 static std::shared_ptr<ID3D12DeviceWrapper> CreateDevice(std::shared_ptr<IDXGIAdapterWrapper> adapter, D3D_FEATURE_LEVEL featureLevel) {
@@ -1797,6 +1815,7 @@ void export_d3d12_0(py::module &m) {
         .def("Unmap", &ID3D12ResourceWrapper::Unmap, "Subresource"_a = 0, "ReadRange"_a = std::optional<D3D12_RANGE>{std::nullopt}) //
         .def("GetDesc", &ID3D12ResourceWrapper::GetDesc)                                                                            //
         .def("SetName", &ID3D12ResourceWrapper::SetName)                                                                            //
+        .def("GetRawPtr", [](ID3D12ResourceWrapper &self) { return (uint64_t)self.resource; })                          //
         ;
 
     py::enum_<D3D12_COMMAND_LIST_TYPE>(m, "D3D12_COMMAND_LIST_TYPE")
@@ -1854,6 +1873,7 @@ void export_d3d12_0(py::module &m) {
         .def("GetCompletedValue", &ID3D12FenceWrapper::GetCompletedValue)                             //
         .def("SetEventOnCompletion", &ID3D12FenceWrapper::SetEventOnCompletion, "Value"_a, "Event"_a) //
         .def("Signal", &ID3D12FenceWrapper::Signal, "Value"_a)                                        //
+        .def("GetRawPtr", [](ID3D12FenceWrapper &self) { return (uint64_t)self.fence; })                          //                                                               //
         ;
 
     py::class_<ID3D12CommandAllocatorWrapper, std::shared_ptr<ID3D12CommandAllocatorWrapper>>(m, "ID3D12CommandAllocator") //
@@ -3122,6 +3142,11 @@ void export_d3d12_0(py::module &m) {
         .def("CreateSampler", &ID3D12DeviceWrapper::CreateSampler, "Desc"_a, "DestDescriptor"_a)                                                            //
         .def("GetDescriptorHandleIncrementSize", &ID3D12DeviceWrapper::GetDescriptorHandleIncrementSize, "Type"_a)                                          //
         .def("GetRaytracingAccelerationStructurePrebuildInfo", &ID3D12DeviceWrapper::GetRaytracingAccelerationStructurePrebuildInfo, "Inputs"_a)            //
+        .def("CreateSharedHandle", &ID3D12DeviceWrapper::CreateSharedHandle,
+            "DeviceChildRawPtr"_a,
+            "SecurityAttributes"_a = nullptr,
+            "Access"_a = GENERIC_ALL,
+             "Name"_a = std::nullopt)  
         ;
 
     m.def("CreateDevice", &CreateDevice);

@@ -58,6 +58,8 @@ def find_file_or_folder(file_name, folder=None):
     """
     if folder is None:
         folder = Path(__file__).parent
+    if not isinstance(folder, Path):
+        folder = Path(folder)
 
     file_name = Path(file_name)
 
