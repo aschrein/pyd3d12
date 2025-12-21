@@ -1,0 +1,628 @@
+<!-- MIT License -->
+<!-- Copyright (c) 2025 Anton Schreiner -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Graph Editor</title>
+    <link rel="stylesheet" href="https://unpkg.com/litegraph.js@0.7.18/css/litegraph.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            overflow: hidden;
+        }
+        
+        #toolbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 50px;
+            background: #16213e;
+            display: flex;
+            align-items: center;
+            padding: 0 15px;
+            gap: 10px;
+            z-index: 100;
+            border-bottom: 1px solid #0f3460;
+        }
+        
+        #toolbar h1 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-right: 20px;
+            color: #e94560;
+        }
+        
+        .toolbar-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 15px;
+            border-left: 1px solid #0f3460;
+        }
+        
+        .toolbar-group:first-of-type {
+            border-left: none;
+        }
+        
+        button {
+            background: #0f3460;
+            color: #eee;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.2s;
+        }
+        
+        button:hover {
+            background: #e94560;
+        }
+        
+        button.primary {
+            background: #e94560;
+        }
+        
+        button.primary:hover {
+            background: #ff6b6b;
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        input[type="text"] {
+            background: #0f3460;
+            border: 1px solid #1a1a4e;
+            color: #eee;
+            padding: 8px 12px;
+            border-radius: 4px;
+            width: 200px;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #e94560;
+        }
+        
+        #graph-hash {
+            font-family: monospace;
+            color: #888;
+            font-size: 12px;
+        }
+        
+        #canvas-container {
+            position: fixed;
+            top: 50px;
+            left: 0;
+            right: 0;
+            bottom: 0;
+        }
+        
+        #graph-canvas {
+            width: 100%;
+            height: 100%;
+        }
+        
+        /* Sidebar for graph list */
+        #sidebar {
+            position: fixed;
+            top: 50px;
+            right: 0;
+            width: 300px;
+            bottom: 0;
+            background: #16213e;
+            border-left: 1px solid #0f3460;
+            transform: translateX(100%);
+            transition: transform 0.3s;
+            z-index: 99;
+            overflow-y: auto;
+        }
+        
+        #sidebar.open {
+            transform: translateX(0);
+        }
+        
+        #sidebar h2 {
+            padding: 15px;
+            font-size: 14px;
+            border-bottom: 1px solid #0f3460;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .graph-item {
+            padding: 12px 15px;
+            border-bottom: 1px solid #0f3460;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .graph-item:hover {
+            background: #0f3460;
+        }
+        
+        .graph-item .name {
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+        
+        .graph-item .hash {
+            font-family: monospace;
+            font-size: 11px;
+            color: #888;
+        }
+        
+        .graph-item .date {
+            font-size: 11px;
+            color: #666;
+            margin-top: 4px;
+        }
+        
+        /* Toast notifications */
+        #toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+        
+        .toast {
+            background: #16213e;
+            color: #eee;
+            padding: 12px 20px;
+            border-radius: 4px;
+            margin-top: 10px;
+            animation: slideIn 0.3s ease;
+            border-left: 3px solid #e94560;
+        }
+        
+        .toast.success {
+            border-left-color: #4ade80;
+        }
+        
+        .toast.error {
+            border-left-color: #ef4444;
+        }
+        
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        
+        /* Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 200;
+        }
+        
+        .modal.open {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: #16213e;
+            padding: 25px;
+            border-radius: 8px;
+            min-width: 400px;
+        }
+        
+        .modal-content h3 {
+            margin-bottom: 15px;
+        }
+        
+        .modal-content input {
+            width: 100%;
+            margin-bottom: 15px;
+        }
+        
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+    </style>
+</head>
+<body>
+    <div id="toolbar">
+        <h1>⚡ Model Graph Editor</h1>
+        
+        <div class="toolbar-group">
+            <input type="text" id="graph-name" placeholder="Graph name..." value="Untitled">
+            <span id="graph-hash"></span>
+        </div>
+        
+        <div class="toolbar-group">
+            <button onclick="newGraph()">New</button>
+            <button onclick="saveGraph()" class="primary">Save</button>
+            <button onclick="openForkModal()" id="fork-btn" disabled>Fork</button>
+            <button onclick="deleteCurrentGraph()" id="delete-btn" disabled style="background:#dc2626">Delete</button>
+        </div>
+        
+        <div class="toolbar-group">
+            <button onclick="exportGraph()">Export JSON</button>
+            <button onclick="document.getElementById('import-input').click()">Import JSON</button>
+            <input type="file" id="import-input" accept=".json" style="display:none" onchange="importGraph(event)">
+        </div>
+        
+        <div class="toolbar-group">
+            <button onclick="toggleSidebar()">📋 Browse Graphs</button>
+        </div>
+    </div>
+    
+    <div id="canvas-container">
+        <canvas id="graph-canvas"></canvas>
+    </div>
+    
+    <div id="sidebar">
+        <h2>
+            Saved Graphs
+            <button onclick="toggleSidebar()" style="padding: 4px 8px;">✕</button>
+        </h2>
+        <div id="graph-list"></div>
+    </div>
+    
+    <div id="toast-container"></div>
+    
+    <!-- Fork Modal -->
+    <div id="fork-modal" class="modal">
+        <div class="modal-content">
+            <h3>Fork Graph</h3>
+            <input type="text" id="fork-name" placeholder="New graph name...">
+            <div class="modal-buttons">
+                <button onclick="closeForkModal()">Cancel</button>
+                <button onclick="forkGraph()" class="primary">Fork</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Delete Confirmation Modal -->
+    <div id="delete-modal" class="modal">
+        <div class="modal-content">
+            <h3>Delete Graph?</h3>
+            <p style="margin-bottom:15px;color:#aaa;">This action cannot be undone. The graph "<span id="delete-graph-name"></span>" will be permanently deleted.</p>
+            <div class="modal-buttons">
+                <button onclick="closeDeleteModal()">Cancel</button>
+                <button onclick="confirmDelete()" style="background:#dc2626">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/litegraph.js@0.7.18/build/litegraph.min.js"></script>
+    <script>
+        // Global state
+        let graph = null;
+        let canvas = null;
+        let currentHash = null;
+        
+        // Check if we're editing an existing graph
+        const pathMatch = window.location.pathname.match(/\/edit\/([a-f0-9]+)/);
+        const initialHash = pathMatch ? pathMatch[1] : null;
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Create graph and canvas
+            graph = new LGraph();
+            const canvasEl = document.getElementById('graph-canvas');
+            canvas = new LGraphCanvas(canvasEl, graph);
+            
+            // Configure canvas
+            canvas.background_image = null;
+            canvas.render_shadows = false;
+            canvas.render_connection_arrows = true;
+            
+            // Resize handler
+            function resize() {
+                canvasEl.width = window.innerWidth;
+                canvasEl.height = window.innerHeight - 50;
+                canvas.resize();
+            }
+            window.addEventListener('resize', resize);
+            resize();
+            
+            // Start running
+            graph.start();
+            
+            // Load initial graph if hash provided
+            if (initialHash) {
+                await loadGraph(initialHash);
+            }
+            
+            // Load graph list
+            loadGraphList();
+        });
+        
+        // Toast notification
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+        
+        // New graph
+        function newGraph() {
+            graph.clear();
+            currentHash = null;
+            document.getElementById('graph-name').value = 'Untitled';
+            document.getElementById('graph-hash').textContent = '';
+            document.getElementById('fork-btn').disabled = true;
+            document.getElementById('delete-btn').disabled = true;
+            window.history.pushState({}, '', '/');
+            showToast('New graph created', 'success');
+        }
+        
+        // Save graph
+        async function saveGraph() {
+            const name = document.getElementById('graph-name').value || 'Untitled';
+            const data = graph.serialize();
+            
+            try {
+                let response;
+                if (currentHash) {
+                    // Update existing
+                    response = await fetch(`/api/graphs/${currentHash}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ data, name })
+                    });
+                } else {
+                    // Create new
+                    response = await fetch('/api/graphs', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name, data })
+                    });
+                }
+                
+                const result = await response.json();
+                if (response.ok) {
+                    currentHash = result.hash;
+                    document.getElementById('graph-hash').textContent = `#${currentHash}`;
+                    document.getElementById('fork-btn').disabled = false;
+                    document.getElementById('delete-btn').disabled = false;
+                    window.history.pushState({}, '', `/edit/${currentHash}`);
+                    showToast(`Graph saved: ${currentHash}`, 'success');
+                    loadGraphList();
+                } else {
+                    showToast(result.detail || 'Save failed', 'error');
+                }
+            } catch (err) {
+                showToast('Network error', 'error');
+            }
+        }
+        
+        // Load graph
+        async function loadGraph(hash) {
+            try {
+                const response = await fetch(`/api/graphs/${hash}`);
+                if (!response.ok) {
+                    showToast('Graph not found', 'error');
+                    return;
+                }
+                
+                const result = await response.json();
+                graph.configure(result.data);
+                currentHash = result.hash;
+                document.getElementById('graph-name').value = result.name;
+                document.getElementById('graph-hash').textContent = `#${currentHash}`;
+                document.getElementById('fork-btn').disabled = false;
+                document.getElementById('delete-btn').disabled = false;
+                window.history.pushState({}, '', `/edit/${hash}`);
+                showToast(`Loaded: ${result.name}`, 'success');
+            } catch (err) {
+                showToast('Failed to load graph', 'error');
+            }
+        }
+        
+        // Fork modal
+        function openForkModal() {
+            if (!currentHash) return;
+            document.getElementById('fork-name').value = document.getElementById('graph-name').value + ' (fork)';
+            document.getElementById('fork-modal').classList.add('open');
+        }
+        
+        function closeForkModal() {
+            document.getElementById('fork-modal').classList.remove('open');
+        }
+        
+        async function forkGraph() {
+            const name = document.getElementById('fork-name').value || 'Forked Graph';
+            const data = graph.serialize();
+            
+            try {
+                const response = await fetch(`/api/graphs/${currentHash}/fork`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, data })
+                });
+                
+                const result = await response.json();
+                if (response.ok) {
+                    currentHash = result.hash;
+                    document.getElementById('graph-name').value = name;
+                    document.getElementById('graph-hash').textContent = `#${currentHash}`;
+                    window.history.pushState({}, '', `/edit/${currentHash}`);
+                    closeForkModal();
+                    showToast(`Forked as: ${currentHash}`, 'success');
+                    loadGraphList();
+                } else {
+                    showToast(result.detail || 'Fork failed', 'error');
+                }
+            } catch (err) {
+                showToast('Network error', 'error');
+            }
+        }
+        
+        // Delete functions
+        function deleteCurrentGraph() {
+            if (!currentHash) return;
+            document.getElementById('delete-graph-name').textContent = document.getElementById('graph-name').value;
+            document.getElementById('delete-modal').classList.add('open');
+        }
+        
+        function closeDeleteModal() {
+            document.getElementById('delete-modal').classList.remove('open');
+        }
+        
+        async function confirmDelete() {
+            if (!currentHash) return;
+            
+            try {
+                const response = await fetch(`/api/graphs/${currentHash}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    showToast('Graph deleted', 'success');
+                    closeDeleteModal();
+                    newGraph();
+                    loadGraphList();
+                } else {
+                    const result = await response.json();
+                    showToast(result.detail || 'Delete failed', 'error');
+                }
+            } catch (err) {
+                showToast('Network error', 'error');
+            }
+        }
+        
+        async function deleteGraphByHash(hash, name) {
+            if (!confirm(`Delete "${name}"?`)) return;
+            
+            try {
+                const response = await fetch(`/api/graphs/${hash}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    showToast('Graph deleted', 'success');
+                    if (currentHash === hash) {
+                        newGraph();
+                    }
+                    loadGraphList();
+                } else {
+                    showToast('Delete failed', 'error');
+                }
+            } catch (err) {
+                showToast('Network error', 'error');
+            }
+        }
+        
+        // Export/Import
+        function exportGraph() {
+            const data = graph.serialize();
+            const name = document.getElementById('graph-name').value || 'graph';
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${name}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast('Graph exported', 'success');
+        }
+        
+        function importGraph(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    graph.configure(data);
+                    currentHash = null;
+                    document.getElementById('graph-name').value = file.name.replace('.json', '');
+                    document.getElementById('graph-hash').textContent = '';
+                    document.getElementById('fork-btn').disabled = true;
+                    document.getElementById('delete-btn').disabled = true;
+                    window.history.pushState({}, '', '/');
+                    showToast('Graph imported', 'success');
+                } catch (err) {
+                    showToast('Invalid JSON file', 'error');
+                }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        }
+        
+        // Sidebar
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+        }
+        
+        async function loadGraphList() {
+            try {
+                const response = await fetch('/api/graphs?limit=50');
+                const result = await response.json();
+                
+                const list = document.getElementById('graph-list');
+                list.innerHTML = '';
+                
+                for (const g of result.graphs) {
+                    const item = document.createElement('div');
+                    item.className = 'graph-item';
+                    
+                    const date = new Date(g.updated_at).toLocaleString();
+                    item.innerHTML = `
+                        <div style="display:flex;justify-content:space-between;align-items:start;">
+                            <div class="name">${g.name}</div>
+                            <button onclick="event.stopPropagation();deleteGraphByHash('${g.hash}','${g.name.replace(/'/g, "\\'")}')" style="padding:2px 6px;font-size:11px;background:#dc2626;">✕</button>
+                        </div>
+                        <div class="hash">#${g.hash}${g.parent_hash ? ' (fork of #' + g.parent_hash + ')' : ''}</div>
+                        <div class="date">${date}</div>
+                    `;
+                    item.onclick = () => {
+                        loadGraph(g.hash);
+                        toggleSidebar();
+                    };
+                    list.appendChild(item);
+                }
+                
+                if (result.graphs.length === 0) {
+                    list.innerHTML = '<div style="padding: 20px; color: #666;">No saved graphs yet</div>';
+                }
+            } catch (err) {
+                console.error('Failed to load graph list:', err);
+            }
+        }
+        
+    </script>
+    <script src="/static/scripts/nodes.js"></script>
+</body>
+</html>
