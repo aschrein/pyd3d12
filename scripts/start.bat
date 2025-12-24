@@ -53,7 +53,7 @@ if not exist bin\dxc_2024_07_31 (
 uv add psutil setuptools wheel scikit-build scikit-build-core pybind11 cmake numpy matplotlib
 uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 uv pip install cuda-python==12.8.0
-uv pip install PyQt5 piq gltflib k3d fastapi uvicorn pydantic
+uv pip install moviepy PyQt5 piq gltflib k3d fastapi uvicorn pydantic hydra-core omegaconf transformers datasets tokenizers evaluate sentencepiece gymnasium[box2d]
 uv pip install kaolin==0.18.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.8.0_cu128.html
 @REM ---------------------------------------
 
